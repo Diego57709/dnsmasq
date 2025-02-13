@@ -29,6 +29,7 @@ check_dnsmasq_docker() {
     else
         echo "dnsmasq NO está en Docker."
         return 1
+    fi
 }
 
 # Verificar si dnsmasq está en el sistema o en Docker
@@ -113,7 +114,27 @@ function gestionarServicio() {
         echo "No se detecta dnsmasq ni en el sistema ni en Docker."
     fi
 }
+function eliminarServicio() {
+    echo "---------------------------------"
+    echo "  ELIMINAR DNSMASQ  "
+    echo "---------------------------------"
 
+    if [[ $SYSTEM_STATUS -eq 0 ]]; then
+        echo "Eliminando dnsmasq del sistema..."
+        sudo systemctl stop dnsmasq
+        sudo apt remove --purge -y dnsmasq
+        sudo rm -rf /etc/dnsmasq.conf
+        echo "dnsmasq ha sido eliminado del sistema correctamente."
+    fi
+
+    if [[ $DOCKER_STATUS -eq 0 ]]; then
+        echo "Eliminando dnsmasq del contenedor Docker..."
+        CONTAINER_ID=$(docker ps -a | grep dnsmasq | awk '{print $1}')
+        docker stop $CONTAINER_ID
+        docker rm $CONTAINER_ID
+        echo "dnsmasq ha sido eliminado de Docker correctamente."
+    fi
+}
 # Mostrar menú y leer la opción del usuario
 while true; do
     mostrarMenu
