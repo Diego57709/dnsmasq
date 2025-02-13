@@ -19,17 +19,16 @@ check_dnsmasq_docker() {
 
     if [[ -n "$CONTAINER_RUNNING" ]]; then
         echo "dnsmasq está corriendo en un contenedor Docker."
-        return 0  # Está corriendo
+        return 0
     elif [[ -n "$CONTAINER_EXISTS" ]]; then
         echo "dnsmasq está en Docker pero el contenedor está detenido."
-        return 2  # Existe pero está detenido
+        return 2 
     elif [[ -n "$IMAGE_EXISTS" ]]; then
         echo "dnsmasq está en Docker como imagen, pero no hay contenedor creado."
-        return 3  # Imagen descargada pero sin contenedor
+        return 3
     else
         echo "dnsmasq NO está en Docker."
-        return 1  # No está en Docker
-    fi
+        return 1
 }
 
 # Verificar si dnsmasq está en el sistema o en Docker
@@ -83,7 +82,6 @@ function gestionarServicio() {
     read -p "Seleccione una acción para dnsmasq: " opcionGestion
 
     if [[ $SYSTEM_STATUS -eq 0 ]]; then
-        # Gestionar dnsmasq en el sistema
         case "$opcionGestion" in
             1) sudo systemctl start dnsmasq && echo "Servicio iniciado con éxito." || echo "Error al iniciar el servicio." ;;
             2) sudo systemctl stop dnsmasq && echo "Servicio detenido con éxito." || echo "Error al detener el servicio." ;;
@@ -92,7 +90,7 @@ function gestionarServicio() {
             *) echo "Opción no válida." ;;
         esac
     elif [[ $DOCKER_STATUS -eq 0 ]]; then
-        # Gestionar dnsmasq en Docker (está corriendo)
+        # Gestionar dnsmasq en Docker
         CONTAINER_ID=$(docker ps -q --filter "ancestor=diego57709/dnsmasq")
         case "$opcionGestion" in
             1) echo "El contenedor ya está en ejecución." ;;
