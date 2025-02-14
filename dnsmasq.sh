@@ -1,16 +1,5 @@
 #!/bin/bash
 
-# Función para verificar si dnsmasq está instalado en el sistema
-check_dnsmasq_system() {
-    if dpkg -l | grep -qw dnsmasq && systemctl list-unit-files | grep -q "dnsmasq.service"; then
-        echo "dnsmasq está instalado en el sistema operativo y el servicio está disponible."
-        return 0
-    else
-        echo "dnsmasq NO está instalado en el sistema o el servicio no está disponible."
-        return 1
-    fi
-}
-
 # Función para verificar si dnsmasq está en Docker (corriendo o detenido)
 check_dnsmasq_docker() {
     CONTAINER_RUNNING=$(docker ps -q --filter "ancestor=diego57709/dnsmasq")
@@ -22,7 +11,7 @@ check_dnsmasq_docker() {
         return 0
     elif [[ -n "$CONTAINER_EXISTS" ]]; then
         echo "dnsmasq está en Docker pero el contenedor está detenido."
-        return 2 
+        return 2
     elif [[ -n "$IMAGE_EXISTS" ]]; then
         echo "dnsmasq está en Docker como imagen, pero no hay contenedor creado."
         return 3
@@ -32,15 +21,12 @@ check_dnsmasq_docker() {
     fi
 }
 
-# Verificar si dnsmasq está en el sistema o en Docker
-check_dnsmasq_system
-SYSTEM_STATUS=$?
-
+# Verificar si dnsmasq está en Docker
 check_dnsmasq_docker
 DOCKER_STATUS=$?
 
-# Si dnsmasq no está en el sistema ni en Docker, preguntar si instalarlo
-if [[ $SYSTEM_STATUS -ne 0 && $DOCKER_STATUS -eq 1 ]]; then
+# Si dnsmasq no está en Docker, preguntar si instalarlo
+if [[ $DOCKER_STATUS -eq 1 ]]; then
     read -p "¿Desea instalar dnsmasq en Docker? (s/n): " opt
     case "$opt" in
         s|S|si|Si|SI)
@@ -63,7 +49,7 @@ fi
 # Función para mostrar el menú principal
 function mostrarMenu() {
     echo "---------------------------------"
-    echo "  MENÚ DE DNSMASQ (0-3)  "
+    echo "  MENÚ DE DNSMASQ EN DOCKER  "
     echo "---------------------------------"
     echo "1. Gestionar el servicio"
     echo "2. Añadir registro DNS"
@@ -71,7 +57,7 @@ function mostrarMenu() {
     echo "0. Salir"
 }
 
-# Función para gestionar el servicio de dnsmasq en el sistema o Docker
+# Función para gestionar el servicio de dnsmasq en Docker
 function gestionarServicio() {
     echo "---------------------------------"
     echo "  MENÚ DE GESTIÓN DEL SERVICIO  "
@@ -82,59 +68,81 @@ function gestionarServicio() {
     echo "4. Estado"
     read -p "Seleccione una acción para dnsmasq: " opcionGestion
 
-    if [[ $SYSTEM_STATUS -eq 0 ]]; then
-        case "$opcionGestion" in
-            1) sudo systemctl start dnsmasq && echo "Servicio iniciado con éxito." || echo "Error al iniciar el servicio." ;;
-            2) sudo systemctl stop dnsmasq && echo "Servicio detenido con éxito." || echo "Error al detener el servicio." ;;
-            3) sudo systemctl restart dnsmasq && echo "Servicio reiniciado con éxito." || echo "Error al reiniciar el servicio." ;;
-            4) sudo systemctl --no-pager status dnsmasq || echo "Error al obtener el estado del servicio." ;;
-            *) echo "Opción no válida." ;;
-        esac
-    elif [[ $DOCKER_STATUS -eq 0 ]]; then
-        # Gestionar dnsmasq en Docker
+    check_dnsmasq_docker
+    DOCKER_STATUS=$?
+
+    if [[ $DOCKER_STATUS -eq 0 ]]; then
         CONTAINER_ID=$(docker ps -q --filter "ancestor=diego57709/dnsmasq")
         case "$opcionGestion" in
             1) echo "El contenedor ya está en ejecución." ;;
-            2) docker stop $CONTAINER_ID && echo "Contenedor detenido con éxito." || echo "Error al detener el contenedor." ;;
-            3) docker restart $CONTAINER_ID && echo "Contenedor reiniciado con éxito." || echo "Error al reiniciar el contenedor." ;;
+            2) docker stop "$CONTAINER_ID" && echo "Contenedor detenido con éxito." || echo "Error al detener el contenedor." ;;
+            3) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado con éxito." || echo "Error al reiniciar el contenedor." ;;
             4) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
             *) echo "Opción no válida." ;;
         esac
     elif [[ $DOCKER_STATUS -eq 2 ]]; then
-        # Contenedor existe pero está detenido → permitir iniciarlo
         CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
         case "$opcionGestion" in
-            1) docker start $CONTAINER_ID && echo "Contenedor iniciado con éxito." || echo "Error al iniciar el contenedor." ;;
+            1) 
+                docker start "$CONTAINER_ID" && echo "Contenedor iniciado con éxito." || echo "Error al iniciar el contenedor."
+                check_dnsmasq_docker 
+                ;;
             2) echo "El contenedor ya está detenido." ;;
-            3) docker restart $CONTAINER_ID && echo "Contenedor reiniciado con éxito." || echo "Error al reiniciar el contenedor." ;;
+            3) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado con éxito." || echo "Error al reiniciar el contenedor." ;;
             4) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
             *) echo "Opción no válida." ;;
         esac
     else
-        echo "No se detecta dnsmasq ni en el sistema ni en Docker."
+        echo "No se detecta dnsmasq en Docker."
     fi
 }
+
+# Función para eliminar dnsmasq en Docker con dos opciones
 function eliminarServicio() {
     echo "---------------------------------"
-    echo "  ELIMINAR DNSMASQ  "
+    echo "  ELIMINAR DNSMASQ EN DOCKER  "
     echo "---------------------------------"
+    echo "1. Borrar solo el contenedor"
+    echo "2. Borrar contenedor e imagen"
+    echo "0. Volver al menú"
+    read -p "Seleccione una opción: " opcionBorrar
 
-    if [[ $SYSTEM_STATUS -eq 0 ]]; then
-        echo "Eliminando dnsmasq del sistema..."
-        sudo systemctl stop dnsmasq
-        sudo apt remove --purge -y dnsmasq
-        sudo rm -rf /etc/dnsmasq.conf
-        echo "dnsmasq ha sido eliminado del sistema correctamente."
-    fi
+    CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
 
-    if [[ $DOCKER_STATUS -eq 0 ]]; then
-        echo "Eliminando dnsmasq del contenedor Docker..."
-        CONTAINER_ID=$(docker ps -a | grep dnsmasq | awk '{print $1}')
-        docker stop $CONTAINER_ID
-        docker rm $CONTAINER_ID
-        echo "dnsmasq ha sido eliminado de Docker correctamente."
-    fi
+    case "$opcionBorrar" in
+        1)
+            if [[ -n "$CONTAINER_ID" ]]; then
+                echo "Eliminando solo el contenedor..."
+                docker stop "$CONTAINER_ID"
+                docker rm "$CONTAINER_ID"
+                echo "Contenedor eliminado correctamente."
+            else
+                echo "No se encontró un contenedor de dnsmasq para eliminar."
+            fi
+            ;;
+        2)
+            if [[ -n "$CONTAINER_ID" ]]; then
+                echo "Eliminando contenedor e imagen de dnsmasq..."
+                docker stop "$CONTAINER_ID"
+                docker rm "$CONTAINER_ID"
+            fi
+            if [[ -n "$(docker images -q diego57709/dnsmasq)" ]]; then
+                docker rmi diego57709/dnsmasq:latest
+                echo "Imagen eliminada correctamente."
+            else
+                echo "No se encontró la imagen de dnsmasq."
+            fi
+            ;;
+        0)
+            echo "Volviendo al menú..."
+            return
+            ;;
+        *)
+            echo "Opción no válida."
+            ;;
+    esac
 }
+
 # Mostrar menú y leer la opción del usuario
 while true; do
     mostrarMenu
