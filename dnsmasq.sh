@@ -63,20 +63,26 @@ fi
 
 # Configuración dinámica de opciones del menú
 MENU_OPCION_1=""
-MENU_OPCION_2=""
+MENU_OPCION_2="Consultar logs"
+MENU_OPCION_3="Configurar el servicio"
+MENU_OPCION_4=""
+MENU_OPCION_5=""
 MENU_FUNCION_1=""
-MENU_FUNCION_2=""
+MENU_FUNCION_2="consultarLogs"
+MENU_FUNCION_3="configurarServicio"
+MENU_FUNCION_4=""
+MENU_FUNCION_5=""
 
-if [[ $SYSTEM_STATUS -eq 0 ]]; then
+if [[ $SYSTEM_STATUS -eq 0 && $DOCKER_STATUS -ne 1 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Sistema)"
-    MENU_OPCION_2="Eliminar dnsmasq del sistema"
+    MENU_OPCION_4="Eliminar dnsmasq del sistema"
     MENU_FUNCION_1="gestionarServicioSistema"
-    MENU_FUNCION_2="eliminarDnsmasqSistema"
+    MENU_FUNCION_4="eliminarDnsmasqSistema"
 elif [[ $DOCKER_STATUS -ne 1 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Docker)"
-    MENU_OPCION_2="Eliminar dnsmasq de Docker"
+    MENU_OPCION_4="Eliminar dnsmasq de Docker"
     MENU_FUNCION_1="gestionarServicioDocker"
-    MENU_FUNCION_2="eliminarDnsmasqDocker"
+    MENU_FUNCION_4="eliminarDnsmasqDocker"
 fi
 
 # Función para mostrar el menú
@@ -85,7 +91,18 @@ function mostrarMenu() {
     echo "---------------------------------"
     echo "1  $MENU_OPCION_1"
     echo "2  $MENU_OPCION_2"
+    echo "3  $MENU_OPCION_3"
+    echo "4  $MENU_OPCION_4"
     echo "0  Salir"
+}
+
+# Placeholders para futuras implementaciones
+function configurarServicio() {
+    echo "Funcionalidad pendiente de implementación."
+}
+
+function consultarLogs() {
+    echo "Funcionalidad pendiente de implementación."
 }
 
 # Función para gestionar dnsmasq en el sistema
@@ -127,20 +144,9 @@ function gestionarServicioDocker() {
     read -p "Seleccione una opción: " opcion
 
     CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
-    IMAGE_EXISTS=$(docker images -q "diego57709/dnsmasq")
 
     case "$opcion" in
-        1)
-            if [[ -n "$CONTAINER_ID" ]]; then
-                docker start "$CONTAINER_ID" && echo "Contenedor iniciado."
-            elif [[ -n "$IMAGE_EXISTS" ]]; then
-                echo "No hay contenedor, pero la imagen está disponible. Creando nuevo contenedor..."
-                docker run -d --name dnsmasq-5354 -p 5354:5354/udp -p 5354:5354/tcp diego57709/dnsmasq:latest
-                echo "Nuevo contenedor creado e iniciado."
-            else
-                echo "No se encontró imagen ni contenedor. Instale dnsmasq en Docker primero."
-            fi
-            ;;
+        1) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
         2) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
         3) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
         4) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
@@ -174,6 +180,8 @@ while true; do
     case "$opcionMenu" in
         1) $MENU_FUNCION_1 ;;
         2) $MENU_FUNCION_2 ;;
+        3) $MENU_FUNCION_3 ;;
+        4) $MENU_FUNCION_4 ;;
         0) echo "Saliendo..." && exit 0 ;;
         *) echo "Opción no válida." ;;
     esac
