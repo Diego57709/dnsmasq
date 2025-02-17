@@ -22,13 +22,13 @@ check_dnsmasq_docker() {
     IMAGE_EXISTS=$(docker images -q "diego57709/dnsmasq")
 
     if [[ -n "$CONTAINER_RUNNING" ]]; then
-        return 0  # Contenedor en ejecución
+        return 0 
     elif [[ -n "$CONTAINER_EXISTS" ]]; then
-        return 2  # Contenedor detenido
+        return 2
     elif [[ -n "$IMAGE_EXISTS" ]]; then
-        return 3  # Imagen disponible pero sin contenedor
+        return 3
     else
-        return 1  # No está en Docker
+        return 1
     fi
 }
 
@@ -102,7 +102,7 @@ fi
 
 # Configuración dinámica de opciones del menú
 MENU_OPCION_1=""
-MENU_OPCION_2="Consultar logs (no implementado)"
+MENU_OPCION_2=""
 MENU_OPCION_3="Configurar el servicio (no implementado)"
 MENU_OPCION_4=""
 MENU_FUNCION_1=""
@@ -112,14 +112,18 @@ MENU_FUNCION_4=""
 
 if [[ $SYSTEM_STATUS -eq 0 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Sistema)"
+    MENU_OPCION_2="Consultar logs"
     MENU_OPCION_4="Eliminar dnsmasq del sistema"
     MENU_FUNCION_1="gestionarServicioSistema"
+    MENU_FUNCION_2="consultarLogs"
     MENU_FUNCION_4="eliminarDnsmasqSistema"
 fi
 if [[ $DOCKER_STATUS -ne 1 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Docker)"
+    MENU_OPCION_2="Consultar logs"
     MENU_OPCION_4="Eliminar dnsmasq de Docker"
     MENU_FUNCION_1="gestionarServicioDocker"
+    MENU_FUNCION_2="consultarLogs"
     MENU_FUNCION_4="eliminarDnsmasqDocker"
 fi
 
@@ -164,8 +168,10 @@ function eliminarDnsmasqSistema() {
     sudo systemctl stop dnsmasq
     sudo apt remove -y dnsmasq
     sudo apt autoremove -y
-    echo "dnsmasq ha sido eliminado del sistema."
+    echo "dnsmasq ha sido eliminado del sistema." && exit 1
+
 }
+
 
 # Función para gestionar dnsmasq en Docker
 function gestionarServicioDocker() {
@@ -201,10 +207,29 @@ function eliminarDnsmasqDocker() {
 
     case "$opcion" in
         1) docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID" && echo "Contenedor eliminado correctamente." ;;
-        2) docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID" && docker rmi diego57709/dnsmasq:latest && echo "Imagen eliminada correctamente." ;;
+        2) docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID" && docker rmi diego57709/dnsmasq:latest && echo "Imagen eliminada correctamente." && exit 1;;
         0) return ;;
         *) echo "Opción no válida." ;;
     esac
+}
+
+# Función para consultar logs con distintos filtros
+consultarLogs() {
+    echo -e "\nCONSULTAR LOGS DE DNSMASQ"
+    echo "---------------------------------"
+    if [[ $SYSTEM_STATUS -eq 0 ]]; then
+        log_source="system"
+        echo "Se utilizará 'journalctl -u dnsmasq' para consultar los logs."
+    elif [[ $DOCKER_STATUS -eq 0 || $DOCKER_STATUS -eq 2 ]]; then
+        log_source="docker"
+        container_id=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+        echo "Se utilizará 'docker logs' para consultar los logs del contenedor ($container_id)."
+    else
+        echo "No se encontró dnsmasq ni en el sistema ni en Docker para consultar logs."
+        return
+    fi
+
+    
 }
 
 # Bucle del menú
