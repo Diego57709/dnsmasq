@@ -229,6 +229,16 @@ consultarLogs() {
         return
     fi
 
+    echo ""
+    echo "Seleccione la opción de filtrado:"
+    echo "1) Mostrar TODOS los logs"
+    echo "2) Mostrar logs DESDE una fecha (formato: YYYY-MM-DD HH:MM:SS)"
+    echo "3) Mostrar logs HASTA una fecha (formato: YYYY-MM-DD HH:MM:SS)"
+    echo "4) Mostrar logs en un RANGO de fechas (desde y hasta)"
+    echo "5) Mostrar las últimas N líneas (ej: 10, 20, 30)"
+    echo "6) Mostrar logs por PRIORIDAD (ej: err, warning, info, debug)"
+    read -p "Opción: " filtro_opcion
+
     
 }
 
