@@ -63,7 +63,6 @@ function estadoSistema () {
     else
         echo "dnsmasq NO está en Docker."
     fi
-    echo "-----------------------------------------------------"
 }
 
 # Si dnsmasq no está en ningún lado, preguntar método de instalación
@@ -79,8 +78,68 @@ if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 ]]; then
         1)
             echo "Instalando dnsmasq con APT..."
             sudo apt update && sudo apt install -y dnsmasq
-            echo "dnsmasq instalado correctamente en el sistema operativo."
+
+            echo ""
+            echo "Seleccione el tipo de configuración que desea aplicar:"
+            echo "1) Configuración básica (Puerto 53, dominio local, interfaz lo, DNS 8.8.8.8)"
+            echo "2) Configuración personalizada (Se le solicitará cada parámetro)"
+            read -p "Opción (1/2): " opcion_config
+
+            if [[ "$opcion_config" == "1" ]]; then
+                echo "Generando configuración básica..."
+                sudo tee /etc/dnsmasq.conf > /dev/null <<EOF
+# Configuración básica de dnsmasq
+port=5354
+domain=juanpepeloko
+interface=ens33
+server=8.8.8.8
+EOF
+                echo "Se ha aplicado la configuración básica en /etc/dnsmasq.conf."
+
+            elif [[ "$opcion_config" == "2" ]]; then
+                echo "Ingrese los parámetros de configuración personalizada:"
+
+                read -p "Puerto (ej: 5354): " puerto
+                [[ -z "$puerto" ]] && puerto=5354
+
+                read -p "Dominio (ej: juanpepeloko): " dominio
+                [[ -z "$dominio" ]] && dominio="juanpepeloko"
+
+                read -p "Interfaz (ej: lo, eth0, ens33): " interfaz
+                [[ -z "$interfaz" ]] && interfaz="ens33"
+
+                read -p "Servidores DNS (ej: 8.8.8.8 1.1.1.1): " servidores_dns
+                [[ -z "$servidores_dns" ]] && servidores_dns="8.8.8.8"
+
+                echo "Generando configuración personalizada..."
+                sudo tee /etc/dnsmasq.conf > /dev/null <<EOF
+# Configuración personalizada de dnsmasq
+port=$puerto
+domain=$dominio
+interface=$interfaz
+EOF
+
+                for dns in $servidores_dns; do
+                    echo "server=$dns" | sudo tee -a /etc/dnsmasq.conf > /dev/null
+                done
+
+                echo "Se ha aplicado la configuración personalizada en /etc/dnsmasq.conf."
+            else
+                echo "Opción no válida. Se aplicará la configuración básica por defecto."
+                sudo tee /etc/dnsmasq.conf > /dev/null <<-EOF
+# Configuración básica de dnsmasq
+port=5354
+domain=juanpepeloko
+interface=ens33
+server=8.8.8.8
+EOF
+                echo "Se ha aplicado la configuración básica en /etc/dnsmasq.conf."
+            fi
+
+            echo "dnsmasq instalado y configurado correctamente en el sistema operativo."
+            sudo systemctl restart dnsmasq
             SYSTEM_STATUS=0
+
             ;;
         2)
             echo "Instalando dnsmasq en Docker..."
@@ -106,7 +165,7 @@ MENU_OPCION_2=""
 MENU_OPCION_3="Configurar el servicio (no implementado)"
 MENU_OPCION_4=""
 MENU_FUNCION_1=""
-MENU_FUNCION_2="consultarLogs"
+MENU_FUNCION_2=""
 MENU_FUNCION_3="configurarServicio"
 MENU_FUNCION_4=""
 
@@ -239,7 +298,60 @@ consultarLogs() {
     echo "6) Mostrar logs por PRIORIDAD (ej: err, warning, info, debug)"
     read -p "Opción: " filtro_opcion
 
-    
+    case "$filtro_opcion" in
+        1)
+            # Mostrar todos los logs
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq
+            else
+                docker logs "$container_id"
+            fi
+            ;;
+        2)
+            read -p "Ingrese la fecha de inicio (YYYY-MM-DD HH:MM:SS): " fecha_inicio
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq --since "$fecha_inicio"
+            else
+                docker logs "$container_id" --since "$fecha_inicio"
+            fi
+            ;;
+        3)
+            read -p "Ingrese la fecha final (YYYY-MM-DD HH:MM:SS): " fecha_fin
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq --until "$fecha_fin"
+            else
+                docker logs "$container_id" --until "$fecha_fin"
+            fi
+            ;;
+        4)
+            read -p "Ingrese la fecha de inicio (YYYY-MM-DD HH:MM:SS): " fecha_inicio
+            read -p "Ingrese la fecha final (YYYY-MM-DD HH:MM:SS): " fecha_fin
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq --since "$fecha_inicio" --until "$fecha_fin"
+            else
+                docker logs "$container_id" --since "$fecha_inicio" --until "$fecha_fin"
+            fi
+            ;;
+        5)
+            read -p "Ingrese la cantidad de líneas a mostrar (ej: 10, 20, 30): " num_lineas
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq -n "$num_lineas"
+            else
+                docker logs "$container_id" --tail "$num_lineas"
+            fi
+            ;;
+        6)
+            read -p "Ingrese la prioridad a filtrar (ej: err, warning, info, debug): " prioridad
+            if [[ "$log_source" == "system" ]]; then
+                journalctl -u dnsmasq -p "$prioridad"
+            else
+                docker logs "$container_id" | grep -i "$prioridad"
+            fi
+            ;;
+        *)
+            echo "Opción no válida."
+            ;;
+    esac
 }
 
 # Bucle del menú
