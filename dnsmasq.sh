@@ -60,14 +60,72 @@ resolve_port_conflict() {
     done
 }
 
+# Función para instalar Docker
+instalar_docker() {
+    echo "Verificando si Docker está instalado..."
+    
+    if command -v docker &> /dev/null; then
+        echo "Docker ya está instalado."
+    else
+        echo "Instalando Docker..."
+
+        sudo apt update
+        sudo apt install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc > /dev/null
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+        echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+        $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+        sudo apt update
+        sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+        sudo systemctl enable docker
+        sudo systemctl start docker
+
+        echo "Docker instalado correctamente."
+    fi
+
+    if groups $USER | grep -q "\bdocker\b"; then
+        echo "El usuario $USER ya tiene permisos para Docker."
+    else
+        echo "Añadiendo el usuario $USER al grupo docker..."
+        sudo groupadd docker 2>/dev/null 
+        sudo usermod -aG docker $USER
+        echo "El usuario $USER ha sido añadido al grupo docker."
+        echo "🔴 Es recomendable reiniciar el sistema para aplicar los cambios."
+    fi
+}
+
+
 
 
 # Funciones para abrir y cerrar puertos con ufw
+habilitarUFW() {
+    if command -v ufw &> /dev/null; then
+        UFW_STATUS=$(sudo ufw status | grep -i "Status: active")
+        if [[ -z "$UFW_STATUS" ]]; then
+            echo "UFW está deshabilitado. Activándolo..."
+            sudo ufw --force enable
+            echo "UFW ha sido activado."
+        fi
+    fi
+}
+
 abrirPuertoUFW() {
     local port=$1
     if command -v ufw &> /dev/null; then
+        habilitarUFW
         sudo ufw allow "$port"/tcp >/dev/null
         sudo ufw allow "$port"/udp >/dev/null
+        echo "Puerto $port abierto en UFW."
     fi
 }
 
@@ -76,8 +134,10 @@ cerrarPuertoUFW() {
     if command -v ufw &> /dev/null; then
         sudo ufw delete allow "$port"/tcp >/dev/null 2>&1
         sudo ufw delete allow "$port"/udp >/dev/null 2>&1
+        echo "Puerto $port cerrado en UFW."
     fi
 }
+
 
 # Función para mostrar el estado actual del sistema
 estadoSistema() {
@@ -117,13 +177,13 @@ instalar_dnsmasq_apt() {
     read -p "Opción (1/2): " opcion_config
 
     if [[ "$opcion_config" == "1" ]]; then
-        puerto=53
+        puerto=5354
         dominio="juanpepe"
         interfaz="ens33"
         servidores_dns="8.8.8.8"
     elif [[ "$opcion_config" == "2" ]]; then
-        read -p "Puerto (ej: 53): " puerto
-        [[ -z "$puerto" ]] && puerto=53
+        read -p "Puerto (ej: 5354): " puerto
+        [[ -z "$puerto" ]] && puerto=5354
         read -p "Dominio (ej: juanpepe): " dominio
         [[ -z "$dominio" ]] && dominio="juanpepe"
         read -p "Interfaz (ej: lo, eth0, ens33): " interfaz
@@ -132,7 +192,7 @@ instalar_dnsmasq_apt() {
         [[ -z "$servidores_dns" ]] && servidores_dns="8.8.8.8"
     else
         echo "Opción no válida. Se aplicará la configuración básica por defecto."
-        puerto=53
+        puerto=5354
         dominio="juanpepe"
         interfaz="ens33"
         servidores_dns="8.8.8.8"
@@ -165,31 +225,32 @@ EOF
 
 # Función para instalar dnsmasq con Docker
 instalar_dnsmasq_docker() {
+    instalar_docker
     echo "Instalando dnsmasq en Docker..."
     docker pull diego57709/dnsmasq:latest
     mkdir -p ~/dnsmasq-docker
 
     echo "Seleccione el tipo de configuración:"
-    echo "1) Configuración básica (Puerto 53, interfaz ens33, DNS 8.8.8.8)"
+    echo "1) Configuración básica (Puerto 5354, interfaz ens33, DNS 8.8.8.8)"
     echo "2) Configuración personalizada"
     read -p "Opción (1/2): " opcion_config
 
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
 
     if [[ "$opcion_config" == "1" ]]; then
-        puerto=53
+        puerto=5354
         interfaz="ens33"
         servidores_dns="8.8.8.8"
     elif [[ "$opcion_config" == "2" ]]; then
-        read -p "Puerto (ej: 53): " puerto
-        [[ -z "$puerto" ]] && puerto=53
+        read -p "Puerto (ej: 5354): " puerto
+        [[ -z "$puerto" ]] && puerto=5354
         read -p "Interfaz (ej: eth0, ens33): " interfaz
         [[ -z "$interfaz" ]] && interfaz="ens33"
         read -p "Servidores DNS (ej: 8.8.8.8 1.1.1.1): " servidores_dns
         [[ -z "$servidores_dns" ]] && servidores_dns="8.8.8.8"
     else
         echo "Opción no válida. Se aplicará la configuración básica por defecto."
-        puerto=53
+        puerto=5354
         interfaz="ens33"
         servidores_dns="8.8.8.8"
     fi
