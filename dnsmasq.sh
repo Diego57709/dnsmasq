@@ -1,4 +1,5 @@
 #!/bin/bash
+
 #-----------------------------------------------------
 # Funciones generales
 #-----------------------------------------------------
@@ -9,7 +10,7 @@ get_ip_address() {
     echo "$IP"
 }
 
-# Función para verificar si dnsmasq está instalado en el sistema (APT)
+# Función para ver si esta en el sistema
 check_dnsmasq_system() {
     if dpkg -l | grep -qw dnsmasq && systemctl list-unit-files | grep -q "dnsmasq.service"; then
         return 0  # Instalado en el sistema
@@ -34,7 +35,7 @@ check_dnsmasq_docker() {
     fi
 }
 
-# Función para ver si esta usandose un puerto
+# Función para ver si se está usando un puerto
 check_port() {
     local port=$1
     if ss -tuln | grep -E -q ":${port}($|[^0-9])"; then
@@ -44,11 +45,12 @@ check_port() {
     fi
 }
 
-# Función para arreglar el conflicto del puerto
+# Función para resolver conflicto de puerto
 resolve_port_conflict() {
     local current_port=$1
     while true; do
         read -p "El puerto $current_port está en uso. Ingrese un nuevo puerto: " new_port
+
         if ! check_port "$new_port"; then
             echo "$new_port"
             return
@@ -56,6 +58,25 @@ resolve_port_conflict() {
             echo "El puerto $new_port también está en uso. Intente con otro."
         fi
     done
+}
+
+
+
+# Funciones para abrir y cerrar puertos con ufw
+abrirPuertoUFW() {
+    local port=$1
+    if command -v ufw &> /dev/null; then
+        sudo ufw allow "$port"/tcp >/dev/null
+        sudo ufw allow "$port"/udp >/dev/null
+    fi
+}
+
+cerrarPuertoUFW() {
+    local port=$1
+    if command -v ufw &> /dev/null; then
+        sudo ufw delete allow "$port"/tcp >/dev/null 2>&1
+        sudo ufw delete allow "$port"/udp >/dev/null 2>&1
+    fi
 }
 
 # Función para mostrar el estado actual del sistema
@@ -81,39 +102,39 @@ estadoSistema() {
 }
 
 #-----------------------------------------------------
-# Funciones de instalación
+# Funciones para ña instalación
 #-----------------------------------------------------
 
-# Función para instalar dnsmasq mediante APT (paquete del sistema)
+# Función para instalar dnsmasq mediante APT
 instalar_dnsmasq_apt() {
     echo "Instalando dnsmasq con APT..."
     sudo apt update && sudo apt install -y dnsmasq
 
     echo ""
     echo "Seleccione el tipo de configuración a aplicar:"
-    echo "1) Configuración básica (Puerto 53, dominio 'local', interfaz 'lo', DNS 8.8.8.8)"
+    echo "1) Configuración básica (Puerto 5354, dominio 'juanpepe', interfaz ens33, DNS 8.8.8.8)"
     echo "2) Configuración personalizada"
     read -p "Opción (1/2): " opcion_config
 
     if [[ "$opcion_config" == "1" ]]; then
         puerto=53
-        dominio="local"
-        interfaz="lo"
+        dominio="juanpepe"
+        interfaz="ens33"
         servidores_dns="8.8.8.8"
     elif [[ "$opcion_config" == "2" ]]; then
         read -p "Puerto (ej: 53): " puerto
         [[ -z "$puerto" ]] && puerto=53
-        read -p "Dominio (ej: local): " dominio
-        [[ -z "$dominio" ]] && dominio="local"
+        read -p "Dominio (ej: juanpepe): " dominio
+        [[ -z "$dominio" ]] && dominio="juanpepe"
         read -p "Interfaz (ej: lo, eth0, ens33): " interfaz
-        [[ -z "$interfaz" ]] && interfaz="lo"
+        [[ -z "$interfaz" ]] && interfaz="ens33"
         read -p "Servidores DNS (ej: 8.8.8.8 1.1.1.1): " servidores_dns
         [[ -z "$servidores_dns" ]] && servidores_dns="8.8.8.8"
     else
         echo "Opción no válida. Se aplicará la configuración básica por defecto."
         puerto=53
-        dominio="local"
-        interfaz="lo"
+        dominio="juanpepe"
+        interfaz="ens33"
         servidores_dns="8.8.8.8"
     fi
 
@@ -129,10 +150,14 @@ instalar_dnsmasq_apt() {
 port=$puerto
 domain=$dominio
 interface=$interfaz
+no-resolv
 EOF
+
     for dns in $servidores_dns; do
         echo "server=$dns" | sudo tee -a /etc/dnsmasq.conf > /dev/null
     done
+
+    abrirPuertoUFW "$puerto"
 
     echo "dnsmasq instalado y configurado en el sistema (APT)."
     sudo systemctl restart dnsmasq
@@ -145,7 +170,7 @@ instalar_dnsmasq_docker() {
     mkdir -p ~/dnsmasq-docker
 
     echo "Seleccione el tipo de configuración:"
-    echo "1) Configuración básica (Puerto 53, interfaz 'eth0', DNS 8.8.8.8)"
+    echo "1) Configuración básica (Puerto 53, interfaz ens33, DNS 8.8.8.8)"
     echo "2) Configuración personalizada"
     read -p "Opción (1/2): " opcion_config
 
@@ -153,23 +178,23 @@ instalar_dnsmasq_docker() {
 
     if [[ "$opcion_config" == "1" ]]; then
         puerto=53
-        interfaz="eth0"
+        interfaz="ens33"
         servidores_dns="8.8.8.8"
     elif [[ "$opcion_config" == "2" ]]; then
         read -p "Puerto (ej: 53): " puerto
         [[ -z "$puerto" ]] && puerto=53
         read -p "Interfaz (ej: eth0, ens33): " interfaz
-        [[ -z "$interfaz" ]] && interfaz="eth0"
+        [[ -z "$interfaz" ]] && interfaz="ens33"
         read -p "Servidores DNS (ej: 8.8.8.8 1.1.1.1): " servidores_dns
         [[ -z "$servidores_dns" ]] && servidores_dns="8.8.8.8"
     else
         echo "Opción no válida. Se aplicará la configuración básica por defecto."
         puerto=53
-        interfaz="eth0"
+        interfaz="ens33"
         servidores_dns="8.8.8.8"
     fi
 
-    # Verificar que fufa el puerto
+    # Verificar si el puerto está en uso
     if check_port "$puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$puerto")
         puerto=$nuevo_puerto
@@ -180,10 +205,14 @@ instalar_dnsmasq_docker() {
 # Configuración de dnsmasq para Docker
 port=$puerto
 interface=$interfaz
+no-resolv
 EOF
+
     for dns in $servidores_dns; do
-        echo "server=$dns" | tee -a $CONFIG_FILE > /dev/null
-    done
+        echo "server=$dns"
+    done >> "$CONFIG_FILE"
+
+    abrirPuertoUFW "$puerto"
 
     docker run -d --name dnsmasq -p $puerto:$puerto/udp -p $puerto:$puerto/tcp \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
@@ -303,7 +332,88 @@ gestionarServicioSistema() {
     esac
 }
 
+#-----------------------------------------------------
+# Funciones de configuración en el sistema
+#-----------------------------------------------------
+
+cambiarPuertoSistema() {
+    viejo_puerto=$(grep "^port=" /etc/dnsmasq.conf | cut -d'=' -f2)
+
+    read -p "Ingrese el nuevo puerto: " nuevo_puerto
+    if check_port "$nuevo_puerto"; then
+        nuevo_puerto=$(resolve_port_conflict "$nuevo_puerto")
+    fi
+
+    if [[ "$viejo_puerto" != "$nuevo_puerto" ]]; then
+        # Cerramos el puerto anterior y abrimos el nuevo
+        cerrarPuertoUFW "$viejo_puerto"
+        abrirPuertoUFW "$nuevo_puerto"
+    fi
+
+    sudo sed -i "s/^port=.*/port=$nuevo_puerto/" /etc/dnsmasq.conf
+    sudo systemctl restart dnsmasq
+    echo "Puerto cambiado a $nuevo_puerto y servicio reiniciado."
+}
+
+cambiarDominioSistema() {
+    read -p "Ingrese el nuevo dominio: " nuevo_dominio
+    [[ -z "$nuevo_dominio" ]] && nuevo_dominio="local"
+    sudo sed -i "s/^domain=.*/domain=$nuevo_dominio/" /etc/dnsmasq.conf
+    sudo systemctl restart dnsmasq
+    echo "Dominio cambiado a $nuevo_dominio y servicio reiniciado."
+}
+
+cambiarInterfazSistema() {
+    read -p "Ingrese la nueva interfaz (ej: eth0, ens33): " nueva_interfaz
+    [[ -z "$nueva_interfaz" ]] && nueva_interfaz="ens33"
+    sudo sed -i "s/^interface=.*/interface=$nueva_interfaz/" /etc/dnsmasq.conf
+    sudo systemctl restart dnsmasq
+    echo "Interfaz cambiada a $nueva_interfaz y servicio reiniciado."
+}
+
+cambiarServidoresDNSSistema() {
+    read -p "Ingrese los nuevos servidores DNS (separados por espacios): " nuevos_dns
+    sudo sed -i '/^server=/d' /etc/dnsmasq.conf
+    for dns in $nuevos_dns; do
+        echo "server=$dns" | sudo tee -a /etc/dnsmasq.conf > /dev/null
+    done
+    sudo systemctl restart dnsmasq
+    echo "Servidores DNS actualizados a: $nuevos_dns y servicio reiniciado."
+}
+
+añadirHostsSistema() {
+    read -p "Ingrese el nombre del host (ej: servidor.local): " nombre_host
+    read -p "Ingrese la IP correspondiente: " ip_host
+    echo "host-record=$nombre_host,$ip_host" | sudo tee -a /etc/dnsmasq.conf > /dev/null
+    sudo systemctl restart dnsmasq
+    echo "Se ha añadido el host $nombre_host con IP $ip_host y el servicio ha sido reiniciado."
+}
+
+configurarServicioSistema() {
+    echo "Seleccione la opción a configurar:"
+    echo "---------------------------------"
+    echo "1) Cambiar puerto"
+    echo "2) Cambiar dominio"
+    echo "3) Cambiar interfaz"
+    echo "4) Cambiar servidores DNS"
+    echo "5) Añadir host"
+    read -p "Opción: " opcion
+    case "$opcion" in
+        1) cambiarPuertoSistema ;;
+        2) cambiarDominioSistema ;;
+        3) cambiarInterfazSistema ;;
+        4) cambiarServidoresDNSSistema ;;
+        5) añadirHostsSistema ;;
+        *) echo "Opción no válida." ;;
+    esac
+}
+
 eliminarDnsmasqSistema() {
+    if [[ -f /etc/dnsmasq.conf ]]; then
+        current_port=$(grep "^port=" /etc/dnsmasq.conf | cut -d'=' -f2)
+        cerrarPuertoUFW "$current_port"
+    fi
+
     echo "Eliminando dnsmasq del sistema..."
     sudo systemctl stop dnsmasq
     sudo apt remove -y dnsmasq
@@ -311,6 +421,10 @@ eliminarDnsmasqSistema() {
     echo "dnsmasq ha sido eliminado del sistema."
     exit 1
 }
+
+#-----------------------------------------------------
+# Funciones de configuración en Docker
+#-----------------------------------------------------
 
 gestionarServicioDocker() {
     echo -e "\nGESTIÓN DE DNSMASQ EN DOCKER"
@@ -330,8 +444,40 @@ gestionarServicioDocker() {
     esac
 }
 
+cambiarPuertoDocker() {
+    CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
+    viejo_puerto=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
+
+    read -p "Ingrese el nuevo puerto: " nuevo_puerto
+    if check_port "$nuevo_puerto"; then
+        nuevo_puerto=$(resolve_port_conflict "$nuevo_puerto")
+    fi
+
+    if [[ "$viejo_puerto" != "$nuevo_puerto" ]]; then
+        cerrarPuertoUFW "$viejo_puerto"
+        abrirPuertoUFW "$nuevo_puerto"
+    fi
+
+    sed -i "s/^port=.*/port=$nuevo_puerto/" "$CONFIG_FILE"
+
+    docker stop dnsmasq && docker rm dnsmasq
+    docker run -d --name dnsmasq \
+        -p $nuevo_puerto:$nuevo_puerto/udp -p $nuevo_puerto:$nuevo_puerto/tcp \
+        -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
+        diego57709/dnsmasq:latest
+
+    echo "Puerto cambiado a $nuevo_puerto y contenedor reiniciado."
+}
+
 eliminarDnsmasqDocker() {
+    CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
+        cerrarPuertoUFW "$current_port"
+    fi
+
     echo -e "\nELIMINAR DNSMASQ EN DOCKER"
     echo "---------------------------------"
     echo "1) Borrar solo el contenedor"
@@ -339,10 +485,22 @@ eliminarDnsmasqDocker() {
     echo "0) Volver al menú"
     read -p "Seleccione una opción: " opcion
     case "$opcion" in
-        1) docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID" && echo "Contenedor eliminado correctamente." ;;
-        2) docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID" && docker rmi diego57709/dnsmasq:latest && echo "Imagen eliminada correctamente." && exit 1 ;;
-        0) return ;;
-        *) echo "Opción no válida." ;;
+        1)
+            docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID"
+            echo "Contenedor eliminado correctamente."
+            ;;
+        2)
+            docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID"
+            docker rmi diego57709/dnsmasq:latest
+            echo "Contenedor e imagen eliminados correctamente."
+            exit 1
+            ;;
+        0)
+            return
+            ;;
+        *)
+            echo "Opción no válida."
+            ;;
     esac
 }
 
@@ -359,7 +517,7 @@ DOCKER_STATUS=$?
 # Obtener la IP
 IP_ADDRESS=$(get_ip_address)
 
-# Si dnsmasq no está instalado ni en el sistema ni en Docker, preguntamos como quiere instalarlo
+# Si dnsmasq no está instalado ni en el sistema ni en Docker, preguntamos cómo instalarlo
 if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 ]]; then
     estadoSistema
     echo "Seleccione el método de instalación:"
@@ -387,23 +545,26 @@ if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 ]]; then
     esac
 fi
 
-# Menú dinamico que depende donde este intslado
+# Menú dinámico según dónde esté instalado
 if [[ $SYSTEM_STATUS -eq 0 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Sistema)"
     MENU_OPCION_2="Consultar logs"
-    MENU_OPCION_3="Configurar el servicio (no implementado)"
+    MENU_OPCION_3="Configurar el servicio"
     MENU_OPCION_4="Eliminar dnsmasq del sistema"
     MENU_FUNCION_1="gestionarServicioSistema"
     MENU_FUNCION_2="consultarLogs"
+    MENU_FUNCION_3="configurarServicioSistema"
     MENU_FUNCION_4="eliminarDnsmasqSistema"
 fi
+
 if [[ $DOCKER_STATUS -ne 1 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Docker)"
     MENU_OPCION_2="Consultar logs"
-    MENU_OPCION_3="Configurar el servicio (no implementado)"
+    MENU_OPCION_3="Configurar el servicio"
     MENU_OPCION_4="Eliminar dnsmasq de Docker"
     MENU_FUNCION_1="gestionarServicioDocker"
     MENU_FUNCION_2="consultarLogs"
+    MENU_FUNCION_3="cambiarPuertoDocker"
     MENU_FUNCION_4="eliminarDnsmasqDocker"
 fi
 
