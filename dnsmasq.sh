@@ -110,8 +110,8 @@ instalar_docker() {
 # Funciones para abrir y cerrar puertos con ufw
 habilitarUFW() {
     if command -v ufw &> /dev/null; then
-        UFW_STATUS=$(sudo ufw status | grep -i "Status: active")
-        if [[ -z "$UFW_STATUS" ]]; then
+        activoUFW=$(sudo ufw status | grep -i "Status: active")
+        if [[ -z "$activoUFW" ]]; then
             echo "UFW está deshabilitado. Activándolo..."
             sudo ufw --force enable
             echo "UFW ha sido activado."
