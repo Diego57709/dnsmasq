@@ -361,9 +361,11 @@ EOF
 
     abrirPuertoUFW "$puerto"
 
-    docker run -d --name dnsmasq -p $puerto:$puerto/udp -p $puerto:$puerto/tcp \
-        -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
+    docker run -d --name dnsmasq --network host \
+    -p "$puerto:$puerto/udp" \
+    -p "$puerto:$puerto/tcp" \
+    -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
+    diego57709/dnsmasq:latest
 
     echo "dnsmasq instalado en Docker con configuración en el puerto $puerto."
 }
