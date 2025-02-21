@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Función de ayuda
+help() {
+    echo "Uso: $0 [opciones]"
+    echo ""
+    echo "Opciones disponibles:"
+    echo "  --help                                Mostrar ayuda"
+    echo "  --install <apt|docker|ansible>        Instalar dnsmasq con el método especificado"
+    echo "  --gestion <apt|docker|ansible> <start|stop|restart|status>  Gestionar dnsmasq"
+}
+
 #=====================================================
 # 1. FUNCIONES GENERALES
 #=====================================================
@@ -252,8 +262,31 @@ estadoSistema() {
 # Funciones para la instalación
 #-----------------------------------------------------
 
+# Función para verificar si dnsmasq ya está instalao
+verificar_instalacion_existente() {
+    check_dnsmasq_system
+    SYSTEM_STATUS=$?
+    check_dnsmasq_docker
+    DOCKER_STATUS=$?
+    check_dnsmasq_ansible
+    ANSIBLE_STATUS=$?
+
+    if [[ $SYSTEM_STATUS -eq 0 ]]; then
+        echo "ERROR! dnsmasq ya está instalado en el sistema (APT)."
+        return 1
+    elif [[ $DOCKER_STATUS -eq 0 || $DOCKER_STATUS -eq 2 || $DOCKER_STATUS -eq 3 ]]; then
+        echo "ERROR! dnsmasq ya está instalado o disponible en Docker."
+        return 1
+    elif [[ $ANSIBLE_STATUS -eq 0 ]]; then
+        echo "ERROR! dnsmasq ya fue instalado con Ansible."
+        return 1
+    fi
+    return 0
+}
+
 # Función para instalar dnsmasq mediante APT
 instalar_dnsmasq_apt() {
+    verificar_instalacion_existente || exit 1
     echo "Instalando dnsmasq con APT..."
     sudo apt update && sudo apt install -y dnsmasq
 
@@ -311,6 +344,7 @@ EOF
 }
 
 instalar_dnsmasq_docker() {
+    verificar_instalacion_existente || exit 1
     instalar_docker
     echo "Instalando dnsmasq en Docker..."
     docker pull diego57709/dnsmasq:latest
@@ -373,6 +407,7 @@ EOF
 
 
 instalar_dnsmasq_ansible() {
+    verificar_instalacion_existente || exit 1
     instalar_ansible
 
     echo ""
@@ -503,6 +538,7 @@ mostrarMenu() {
 consultarLogs() {
     echo -e "\nCONSULTAR LOGS DE DNSMASQ"
     echo "---------------------------------"
+    
     if [[ $SYSTEM_STATUS -eq 0 ]]; then
         log_source="system"
         echo "Se utilizará 'journalctl -u dnsmasq' para consultar los logs."
@@ -510,8 +546,11 @@ consultarLogs() {
         log_source="docker"
         container_id=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
         echo "Se utilizará 'docker logs' para consultar los logs del contenedor ($container_id)."
+    elif [[ $ANSIBLE_STATUS -eq 0 ]]; then
+        log_source="ansible"
+        echo "Se utilizará 'journalctl -u dnsmasq' (Ansible usa systemd)."
     else
-        echo "No se encontró dnsmasq en el sistema ni en Docker para consultar logs."
+        echo "No se encontró dnsmasq en el sistema, Docker ni gestionado por Ansible para consultar logs."
         return
     fi
 
@@ -527,7 +566,7 @@ consultarLogs() {
 
     case "$filtro_opcion" in
         1)
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq
             else
                 docker logs "$container_id"
@@ -535,7 +574,7 @@ consultarLogs() {
             ;;
         2)
             read -p "Ingrese la fecha de inicio (YYYY-MM-DD HH:MM:SS): " fecha_inicio
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq --since "$fecha_inicio"
             else
                 docker logs "$container_id" --since "$fecha_inicio"
@@ -543,7 +582,7 @@ consultarLogs() {
             ;;
         3)
             read -p "Ingrese la fecha final (YYYY-MM-DD HH:MM:SS): " fecha_fin
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq --until "$fecha_fin"
             else
                 docker logs "$container_id" --until "$fecha_fin"
@@ -552,7 +591,7 @@ consultarLogs() {
         4)
             read -p "Ingrese la fecha de inicio (YYYY-MM-DD HH:MM:SS): " fecha_inicio
             read -p "Ingrese la fecha final (YYYY-MM-DD HH:MM:SS): " fecha_fin
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq --since "$fecha_inicio" --until "$fecha_fin"
             else
                 docker logs "$container_id" --since "$fecha_inicio" --until "$fecha_fin"
@@ -560,7 +599,7 @@ consultarLogs() {
             ;;
         5)
             read -p "Ingrese la cantidad de líneas a mostrar: " num_lineas
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq -n "$num_lineas"
             else
                 docker logs "$container_id" --tail "$num_lineas"
@@ -568,7 +607,7 @@ consultarLogs() {
             ;;
         6)
             read -p "Ingrese la prioridad a filtrar (ej: err, warning, info, debug): " prioridad
-            if [[ "$log_source" == "system" ]]; then
+            if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
                 journalctl -u dnsmasq -p "$prioridad"
             else
                 docker logs "$container_id" | grep -i "$prioridad"
@@ -742,7 +781,9 @@ cambiarPuertoDocker() {
     sed -i "s/^port=.*/port=$nuevo_puerto/" "$CONFIG_FILE"
 
     docker stop dnsmasq && docker rm dnsmasq
-    docker run -d --name dnsmasq -p $nuevo_puerto:$nuevo_puerto/udp -p $nuevo_puerto:$nuevo_puerto/tcp \
+
+    docker run -d --name dnsmasq --network host \
+        -p $nuevo_puerto:$nuevo_puerto/udp -p $nuevo_puerto:$nuevo_puerto/tcp \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
         diego57709/dnsmasq:latest 
 
@@ -761,7 +802,7 @@ cambiarDominioDocker() {
 
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
 
-    docker run -d --name dnsmasq \
+    docker run -d --name dnsmasq --network host \
         -p "$current_port:$current_port/udp" \
         -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
@@ -782,9 +823,7 @@ cambiarInterfazDocker() {
 
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
 
-    docker run -d --name dnsmasq \
-        --network host \
-        --restart unless-stopped \
+    docker run -d --name dnsmasq --network host \
         -p "$current_port:$current_port/udp" \
         -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
@@ -809,8 +848,7 @@ cambiarServidoresDNSDocker() {
 
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
 
-    docker run -d --name dnsmasq \
-        --network host \
+    docker run -d --name dnsmasq --network host \
         -p "$current_port:$current_port/udp" \
         -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
@@ -832,8 +870,7 @@ añadirHostsDocker() {
  
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
 
-    docker run -d --name dnsmasq \
-        --network host \
+    docker run -d --name dnsmasq --network host \
         -p "$current_port:$current_port/udp" \
         -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
@@ -865,11 +902,6 @@ eliminarDnsmasqDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
 
-    if [[ -f "$CONFIG_FILE" ]]; then
-        current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-        cerrarPuertoUFW "$current_port"
-    fi
-
     echo -e "\nELIMINAR DNSMASQ EN DOCKER"
     echo "---------------------------------"
     echo "1) Borrar solo el contenedor"
@@ -884,6 +916,10 @@ eliminarDnsmasqDocker() {
         2)
             docker stop "$CONTAINER_ID" && docker rm "$CONTAINER_ID"
             docker rmi diego57709/dnsmasq:latest
+            if [[ -f "$CONFIG_FILE" ]]; then
+                current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
+                cerrarPuertoUFW "$current_port"
+            fi
             echo "Contenedor e imagen eliminados correctamente."
             exit 1
             ;;
@@ -1164,6 +1200,7 @@ EOF
 # 9. INICIO DEL SCRIPT
 #=====================================================
 
+
 #-----------------------------------------------------
 # Bloque principal de ejecución
 #-----------------------------------------------------
@@ -1178,6 +1215,115 @@ ANSIBLE_STATUS=$?
 
 # Obtener la IP
 IP_ADDRESS=$(get_ip_address)
+
+#!/bin/bash
+
+# Función de ayuda
+help() {
+    echo "Uso: $0 [opciones]"
+    echo ""
+    echo "Opciones disponibles:"
+    echo "  --help                          Mostrar ayuda"
+    echo "  --install <apt|docker|ansible>  Instalar dnsmasq con el método especificado"
+    echo "  --gestion <start|stop|restart|status>  Gestionar el servicio dnsmasq"
+}
+
+# Verifica si se pasó al menos un argumento
+if [[ $# -ge 1 ]]; then
+case "$1" in
+    --help)
+        help
+        exit 0
+        ;;
+    
+    --install)
+        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+        case "$2" in
+            apt) instalar_dnsmasq_apt ;;
+            docker) instalar_dnsmasq_docker ;;
+            ansible) instalar_dnsmasq_ansible ;;
+            *) echo "Error: Método inválido. Usa: $0 --install <apt|docker|ansible>"; exit 1 ;;
+        esac
+        exit 0
+        ;;
+
+    --gestion)
+        [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
+        case "$2" in
+            apt) 
+                case "$3" in
+                    start) sudo systemctl start dnsmasq ;;
+                    stop) sudo systemctl stop dnsmasq ;;
+                    restart) sudo systemctl restart dnsmasq ;;
+                    status) systemctl status dnsmasq ;;
+                *) echo "Error: Acción inválida. Usa: $0 --gestion apt <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+            docker) 
+                CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+                case "$3" in
+                    start) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
+                    stop) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
+                    restart) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
+                    status) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
+                *) echo "Error: Acción inválida. Usa: $0 --gestion docker <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+            ansible) 
+                case "$3" in
+                    start) ansible_dnsmasq_service "started" ;;
+                    stop) ansible_dnsmasq_service "stopped" ;;
+                    restart) ansible_dnsmasq_service "restarted" ;;
+                    status) ansible_dnsmasq_status ;;
+                    *) echo "Error: Acción inválida. Usa: $0 --gestion ansible <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+            *) echo "Error: Acción inválida. Usa: $0 --gestion <apt|docker|ansible> <start|stop|restart|status>"; exit 1 ;;
+            esac
+            exit 0
+            ;;
+    --logs)
+        [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
+        case "$2" in
+            apt) 
+                case "$3" in
+                    start) sudo systemctl start dnsmasq ;;
+                    stop) sudo systemctl stop dnsmasq ;;
+                    restart) sudo systemctl restart dnsmasq ;;
+                    status) systemctl status dnsmasq ;;
+                *) echo "Error: Acción inválida. Usa: $0 --logs apt <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+            docker) 
+                CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+                case "$3" in
+                    start) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
+                    stop) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
+                    restart) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
+                    status) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
+                *) echo "Error: Acción inválida. Usa: $0 --logs docker <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+            ansible) 
+                case "$3" in
+                    start) ansible_dnsmasq_service "started" ;;
+                    stop) ansible_dnsmasq_service "stopped" ;;
+                    restart) ansible_dnsmasq_service "restarted" ;;
+                    status) ansible_dnsmasq_status ;;
+                    *) echo "Error: Acción inválida. Usa: $0 --logs <apt|docker|ansible> <start|stop|restart|status>"; exit 1 ;;
+                esac
+                ;;
+        esac
+        exit 0
+        ;;
+
+    *)
+        echo "Error: Opción no reconocida."
+        help
+        exit 1
+        ;;
+esac
+fi
 
 # Si dnsmasq no está instalado ni en el sistema ni en Docker, preguntamos cómo instalarlo
 if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 && $ANSIBLE_STATUS -eq 1 ]]; then
@@ -1246,7 +1392,6 @@ if [[ $ANSIBLE_STATUS -ne 1 ]]; then
     MENU_FUNCION_3="configurarServicioAnsible"
     MENU_FUNCION_4="eliminarDnsmasqAnsible"
 fi
-
 
 # Bucle del menú principal
 while true; do
