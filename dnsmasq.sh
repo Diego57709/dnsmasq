@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# Función de ayuda
-help() {
-    echo "Uso: $0 [opciones]"
-    echo ""
-    echo "Opciones disponibles:"
-    echo "  --help                                Mostrar ayuda"
-    echo "  --install <apt|docker|ansible>        Instalar dnsmasq con el método especificado"
-    echo "  --gestion <apt|docker|ansible> <start|stop|restart|status>  Gestionar dnsmasq"
-}
-
 #=====================================================
 # 1. FUNCIONES GENERALES
 #=====================================================
@@ -74,9 +64,9 @@ check_dnsmasq_ansible() {
 check_port() {
     local port=$1
     if ss -tuln | grep -E -q ":${port}($|[^0-9])"; then
-        return 0  # En uso
+        return 0
     else
-        return 1  # Libre
+        return 1
     fi
 }
 
@@ -89,7 +79,7 @@ resolve_port_conflict() {
         read -p "El puerto $current_port está en uso. Ingrese un nuevo puerto: " new_port
 
         if [[ ! "$new_port" =~ ^[0-9]+$ ]]; then
-            echo "❌ Error: Debe ingresar un número de puerto válido."
+            echo "Error: Debe ingresar un número de puerto válido." >&2
             continue
         fi
 
@@ -97,11 +87,10 @@ resolve_port_conflict() {
             echo "$new_port"
             return
         else
-            echo "❌ El puerto $new_port también está en uso. Intente con otro."
+            echo "El puerto $new_port también está en uso. Intente con otro." >&2
         fi
     done
 }
-
 
 # Función para instalar Docker
 instalar_docker() {
@@ -143,18 +132,70 @@ instalar_docker() {
         sudo groupadd docker 2>/dev/null 
         sudo usermod -aG docker $USER
         echo "El usuario $USER ha sido añadido al grupo docker."
-        echo "🔴 Es recomendable reiniciar el sistema para aplicar los cambios."
+        echo "Es recomendable reiniciar el sistema para aplicar los cambios."
     fi
 }
 
+
+ANSIBLE_REMOTE_FILE="$HOME/.ansible_remote"
+ANSIBLE_REMOTE=""
+
+# Función para configurar la máquina remota para Ansible
+configurar_ansible_remote() {
+    read -p "Ingrese la IP o hostname de la máquina donde se gestionará Ansible: " remote_ansible
+    if [[ -z "$remote_ansible" ]]; then
+        echo "No se ingresó nada. Se usará 'localhost'."
+        remote_ansible="localhost"
+    fi
+    echo "$remote_ansible" > "$ANSIBLE_REMOTE_FILE"
+    ANSIBLE_REMOTE="$remote_ansible"
+    echo "Máquina remota configurada: $ANSIBLE_REMOTE"
+}
+
+# Función para instalar Ansible en la máquina remota usando sudo -S
 instalar_ansible() {
-    echo "Verificando si Ansible está instalado..."
-    if ! command -v ansible &> /dev/null; then
-        echo "Ansible no está instalado. Instalándolo..."
-        sudo apt update
-        sudo apt install -y ansible
+    if [[ -f "$ANSIBLE_REMOTE_FILE" ]]; then
+        ANSIBLE_REMOTE=$(cat "$ANSIBLE_REMOTE_FILE")
+        echo "Usando máquina remota para Ansible: $ANSIBLE_REMOTE"
     else
-        echo "Ansible ya está instalado."
+        read -p "No se ha configurado una máquina remota para Ansible. ¿Desea configurarla ahora? (s/n): " resp
+        if [[ "$resp" == "s" || "$resp" == "S" ]]; then
+            configurar_ansible_remote
+        else
+            echo "Debe configurar una máquina remota. Saliendo..."
+            exit 1
+        fi
+    fi
+
+    if [[ "$ANSIBLE_REMOTE" == "localhost" ]]; then
+        echo "Error: Se requiere una máquina remota. No se puede usar 'localhost'."
+        exit 1
+    fi
+
+    # Si no se ha definido la contraseña en REMOTE_SUDO_PASS, se le solicita al usuario
+    if [[ -z "$REMOTE_SUDO_PASS" ]]; then
+        read -s -p "Ingrese la contraseña sudo para $ANSIBLE_REMOTE: " REMOTE_SUDO_PASS
+        echo ""
+    fi
+
+    # Verificar e instalar Ansible en la máquina remota usando sudo -S
+    if ! ssh "$ANSIBLE_REMOTE" 'command -v ansible' &>/dev/null; then
+        echo "Ansible no está instalado en $ANSIBLE_REMOTE. Instalándolo vía SSH..."
+        ssh "$ANSIBLE_REMOTE" "echo '$REMOTE_SUDO_PASS' | sudo -S apt update && echo '$REMOTE_SUDO_PASS' | sudo -S apt install -y ansible"
+    else
+        echo "Ansible ya está instalado en $ANSIBLE_REMOTE."
+    fi
+}
+
+
+# Función para generar un inventario dinámico para Ansible
+generar_inventario_ansible() {
+    INVENTORY_FILE="/tmp/ansible_hosts"
+    if [[ "$ANSIBLE_REMOTE" == "localhost" ]]; then
+        echo "Error: La máquina remota no puede ser 'localhost'."
+        exit 1
+    else
+        echo -e "[remote]\n$ANSIBLE_REMOTE ansible_user=$(whoami) ansible_connection=ssh" > "$INVENTORY_FILE"
     fi
 }
 
@@ -318,7 +359,6 @@ instalar_dnsmasq_apt() {
         servidores_dns="8.8.8.8"
     fi
 
-    # Verificar si el puerto está en uso
     if check_port "$puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$puerto")
         puerto=$nuevo_puerto
@@ -375,7 +415,6 @@ instalar_dnsmasq_docker() {
         servidores_dns="8.8.8.8"
     fi
 
-    # Verificar si el puerto está en uso
     if check_port "$puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$puerto")
         puerto=$nuevo_puerto
@@ -443,20 +482,13 @@ instalar_dnsmasq_ansible() {
         puerto=$nuevo_puerto
     fi
 
-    INVENTORY_FILE="/etc/ansible/hosts"
-    if [[ ! -f "$INVENTORY_FILE" ]]; then
-        echo "Creando inventario de Ansible en $INVENTORY_FILE..."
-        sudo tee "$INVENTORY_FILE" > /dev/null <<EOF
-[local]
-localhost ansible_connection=local
-EOF
-    fi
+    generar_inventario_ansible
 
     echo "Generando playbook de Ansible en /tmp/dnsmasq_install.yml..."
     cat <<EOF > /tmp/dnsmasq_install.yml
 ---
 - name: Instalar y configurar dnsmasq con Ansible
-  hosts: localhost
+  hosts: remote
   become: yes
   tasks:
     - name: Instalar dnsmasq
@@ -496,6 +528,7 @@ EOF
       shell: |
         ufw allow $puerto/tcp
         ufw allow $puerto/udp
+      ignore_errors: yes
 
     - name: Reiniciar dnsmasq
       service:
@@ -508,13 +541,12 @@ EOF
         line: "# Ansible managed"
         insertbefore: BOF
       when: ansible_facts['pkg_mgr'] == 'apt'
-
 EOF
 
-    echo "Ejecutando playbook de Ansible..."
+    echo "Ejecutando playbook de Ansible en $ANSIBLE_REMOTE..."
     ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_install.yml
 
-    echo "dnsmasq instalado y configurado con Ansible en el puerto $puerto."
+    echo "dnsmasq instalado y configurado con Ansible en $ANSIBLE_REMOTE en el puerto $puerto."
 }
 
 #=====================================================
@@ -956,30 +988,30 @@ gestionarServicioAnsible() {
     esac
 }
 
-# Función auxiliar para (start|stop|restart) con Ansible
+# Función gestionar Ansible
 ansible_dnsmasq_service() {
-    local desired_state=$1
+    local estado_ansible=$1
 
-    echo "Creando playbook para '$desired_state' dnsmasq en Ansible..."
+    echo "Creando playbook para '$estado_ansible' dnsmasq en Ansible..."
     cat <<EOF > /tmp/dnsmasq_service.yml
 ---
 - name: Gestionar servicio dnsmasq con Ansible
   hosts: localhost
   become: yes
   tasks:
-    - name: Asegurar dnsmasq en estado '$desired_state'
+    - name: Asegurar dnsmasq en estado '$estado_ansible'
       service:
         name: dnsmasq
-        state: $desired_state
+        state: $estado_ansible
 EOF
 
-    echo "Ejecutando playbook de Ansible para '$desired_state' dnsmasq..."
+    echo "Ejecutando playbook de Ansible para '$estado_ansible' dnsmasq..."
     ansible-playbook /tmp/dnsmasq_service.yml
 
-    echo "Operación '$desired_state' finalizada."
+    echo "Operación '$estado_ansible' finalizada."
 }
 
-# Función para mostrar estado con Ansible (usando el módulo service o un shell)
+# Función para mostrar estado con Ansible
 ansible_dnsmasq_status() {
     echo "Creando playbook para consultar 'status' de dnsmasq..."
     cat <<EOF > /tmp/dnsmasq_status.yml
@@ -1202,10 +1234,9 @@ EOF
 
 
 #-----------------------------------------------------
-# Bloque principal de ejecución
+# Bloque de ejecución
 #-----------------------------------------------------
 
-# Verificar el estado de dnsmasq en el sistema y en Docker
 check_dnsmasq_system
 SYSTEM_STATUS=$?
 check_dnsmasq_docker
@@ -1223,9 +1254,10 @@ help() {
     echo "Uso: $0 [opciones]"
     echo ""
     echo "Opciones disponibles:"
-    echo "  --help                          Mostrar ayuda"
-    echo "  --install <apt|docker|ansible>  Instalar dnsmasq con el método especificado"
-    echo "  --gestion <start|stop|restart|status>  Gestionar el servicio dnsmasq"
+    echo "  --help                                                      Mostrar ayuda"
+    echo "  --install <apt|docker|ansible>                              Instalar dnsmasq"
+    echo "  --gestion <apt|docker|ansible> <start|stop|restart|status>  Gestionar dnsmasq"
+    echo "  --uninstall <apt|docker|ansible>                            Eliminar dnsmasq"
 }
 
 # Verifica si se pasó al menos un argumento
@@ -1246,7 +1278,16 @@ case "$1" in
         esac
         exit 0
         ;;
-
+    --configuracion)
+    [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+        case "$2" in
+            apt) configurarServicioSistema ;;
+            docker) configurarServicioDocker ;;
+            ansible) configurarServicioAnsible ;;
+            *) echo "Error: Método inválido. Usa: $0 --configuracion <apt|docker|ansible>"; exit 1 ;;
+        esac
+        exit 0
+        ;;
     --gestion)
         [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
         case "$2" in
@@ -1283,40 +1324,43 @@ case "$1" in
             exit 0
             ;;
     --logs)
-        [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
+        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación (apt, docker o ansible)."; help; exit 1; }
         case "$2" in
             apt) 
-                case "$3" in
-                    start) sudo systemctl start dnsmasq ;;
-                    stop) sudo systemctl stop dnsmasq ;;
-                    restart) sudo systemctl restart dnsmasq ;;
-                    status) systemctl status dnsmasq ;;
-                *) echo "Error: Acción inválida. Usa: $0 --logs apt <start|stop|restart|status>"; exit 1 ;;
-                esac
+                echo "Consultando logs con (APT)..."
+                journalctl -u dnsmasq
                 ;;
+                
             docker) 
                 CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
-                case "$3" in
-                    start) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
-                    stop) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
-                    restart) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
-                    status) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
-                *) echo "Error: Acción inválida. Usa: $0 --logs docker <start|stop|restart|status>"; exit 1 ;;
-                esac
+                if [[ -z "$CONTAINER_ID" ]]; then
+                    echo "Error: No hay un contenedor dnsmasq en Docker."
+                    exit 1
+                fi
+                echo "Consultando logs del contenedor dnsmasq en Docker..."
+                docker logs "$CONTAINER_ID"
                 ;;
             ansible) 
-                case "$3" in
-                    start) ansible_dnsmasq_service "started" ;;
-                    stop) ansible_dnsmasq_service "stopped" ;;
-                    restart) ansible_dnsmasq_service "restarted" ;;
-                    status) ansible_dnsmasq_status ;;
-                    *) echo "Error: Acción inválida. Usa: $0 --logs <apt|docker|ansible> <start|stop|restart|status>"; exit 1 ;;
-                esac
+                echo "Consultando logs con Ansible..."
+                journalctl -u dnsmasq
+                ;;
+            *)
+                echo "Error: Método inválido. Usa: $0 --logs <apt|docker|ansible>"
+                exit 1
                 ;;
         esac
         exit 0
         ;;
-
+    --uninstall)
+        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+            case "$2" in
+                apt) eliminarDnsmasqSistema ;;
+                docker) eliminarDnsmasqDocker ;;
+                ansible) eliminarDnsmasqAnsible ;;
+                *) echo "Error: Método inválido. Usa: $0 --uninstall <apt|docker|ansible>"; exit 1 ;;
+            esac
+            exit 0
+            ;;
     *)
         echo "Error: Opción no reconocida."
         help
