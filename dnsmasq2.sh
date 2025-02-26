@@ -1,66 +1,14 @@
 #!/bin/bash
-
 #=====================================================
 # 1. FUNCIONES GENERALES
 #=====================================================
 
-#-----------------------------------------------------
-# Funciones generales
-#-----------------------------------------------------
-
 # Función para obtener la IP del equipo
-#get_ip_address() {
-#    ip -o -4 addr show | tr -s ' ' | grep -Ev ' lo | docker' | awk '{print $2 ":", $4}' | cut -d/ -f1
-#}
-# Función para obtener información del host remoto con Ansible
-get_remote_dnsmasq_info() {
-    INVENTORY_FILE="/tmp/ansible_hosts"
-    REMOTE_INFO_FILE="/tmp/dnsmasq_remote_info.txt"
-
-    echo "Recopilando información del host remoto con Ansible..."
-
-    # Crear playbook temporal para obtener configuración de dnsmasq
-    cat <<EOF > /tmp/dnsmasq_info.yml
----
-- name: Obtener configuración de dnsmasq
-  hosts: remote
-  gather_facts: yes
-  tasks:
-    - name: Obtener interfaz de dnsmasq
-      shell: "grep '^interface=' /etc/dnsmasq.conf | cut -d'=' -f2"
-      register: dns_interface
-      ignore_errors: yes
-
-    - name: Obtener puerto de dnsmasq
-      shell: "grep '^port=' /etc/dnsmasq.conf | cut -d'=' -f2"
-      register: dns_port
-      ignore_errors: yes
-
-    - name: Obtener dirección IP de la interfaz
-      shell: "ip -o -4 addr show \$(grep '^interface=' /etc/dnsmasq.conf | cut -d'=' -f2) | awk '{print \$4}' | cut -d/ -f1"
-      register: dns_ip
-      ignore_errors: yes
-
-    - name: Guardar resultados en un archivo temporal
-      copy:
-        content: |
-          INTERFAZ={{ dns_interface.stdout | default('N/A') }}
-          PUERTO={{ dns_port.stdout | default('N/A') }}
-          IP={{ dns_ip.stdout | default('N/A') }}
-        dest: "/tmp/dnsmasq_remote_info.txt"
-      delegate_to: localhost
-EOF
-
-    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_info.yml --ask-become-pass > /dev/null 2>&1
-
-    if [[ -f "$REMOTE_INFO_FILE" ]]; then
-        source "$REMOTE_INFO_FILE"
-    else
-        echo "Error: No se pudo obtener información remota con Ansible."
-    fi
+get_ip_address() {
+    ip -o -4 addr show | tr -s ' ' | grep -Ev ' lo|docker' | awk '{print $2 ":", $4}' | cut -d/ -f1
 }
 
-# Función para ver si esta en el sistema
+# Función para ver si dnsmasq está instalado vía APT
 check_dnsmasq_system() {
     if ! dpkg -l | grep -qw dnsmasq || ! systemctl list-unit-files | grep -q "dnsmasq.service"; then
         return 1
@@ -70,7 +18,6 @@ check_dnsmasq_system() {
     fi
     return 0
 }
-
 
 # Función para verificar el estado de dnsmasq en Docker
 check_dnsmasq_docker() {
@@ -93,22 +40,15 @@ check_dnsmasq_ansible() {
     if ! command -v ansible &>/dev/null; then
         return 1
     fi
-
     if ! dpkg -l | grep -qw dnsmasq; then
         return 1
     fi
-
     if [[ -f /etc/dnsmasq.conf ]] && grep -q "Ansible managed" /etc/dnsmasq.conf; then
-        return 0 
-    fi
-
-    if check_ansible_inventory; then
         return 0
+    else
+        return 1
     fi
-
-    return 1
 }
-
 
 # Función para ver si se está usando un puerto
 check_port() {
@@ -124,15 +64,12 @@ check_port() {
 resolve_port_conflict() {
     local current_port=$1
     local new_port
-
     while true; do
         read -p "El puerto $current_port está en uso. Ingrese un nuevo puerto: " new_port
-
         if [[ ! "$new_port" =~ ^[0-9]+$ ]]; then
             echo "Error: Debe ingresar un número de puerto válido." >&2
             continue
         fi
-
         if ! check_port "$new_port"; then
             echo "$new_port"
             return
@@ -145,47 +82,35 @@ resolve_port_conflict() {
 # Función para instalar Docker
 instalar_docker() {
     echo "Verificando si Docker está instalado..."
-    
     if command -v docker &> /dev/null; then
         echo "Docker ya está instalado."
     else
         echo "Instalando Docker..."
-
         sudo apt update
-        sudo apt install -y \
-            ca-certificates \
-            curl \
-            gnupg \
-            lsb-release
-
+        sudo apt install -y ca-certificates curl gnupg lsb-release
         sudo mkdir -p /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc > /dev/null
         sudo chmod a+r /etc/apt/keyrings/docker.asc
-
-        echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-        $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
         sudo apt update
         sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
         sudo systemctl enable docker
         sudo systemctl start docker
-
         echo "Docker instalado correctamente."
     fi
-
     if groups $USER | grep -q "\bdocker\b"; then
         echo "El usuario $USER ya tiene permisos para Docker."
     else
         echo "Añadiendo el usuario $USER al grupo docker..."
         sudo groupadd docker 2>/dev/null 
         sudo usermod -aG docker $USER
-        echo "El usuario $USER ha sido añadido al grupo docker."
-        echo "Es recomendable reiniciar el sistema para aplicar los cambios."
+        echo "El usuario $USER ha sido añadido al grupo docker. Es recomendable reiniciar el sistema."
     fi
 }
 
+#=====================================================
+# 2. GESTIÓN DE ANSIBLE REMOTO (sin localhost)
+#=====================================================
 
 ANSIBLE_REMOTE_FILE="$HOME/.ansible_remote"
 ANSIBLE_REMOTE=""
@@ -235,62 +160,14 @@ instalar_ansible() {
     fi
 }
 
-# Función para generar un inventario dinámico para Ansible
+# Función para generar un inventario dinámico para Ansible (solo remoto)
 generar_inventario_ansible() {
     INVENTORY_FILE="/tmp/ansible_hosts"
     if [[ "$ANSIBLE_REMOTE" == "localhost" ]]; then
         echo "Error: La máquina remota no puede ser 'localhost'."
         exit 1
     else
-        echo -e "[remote]\n$ANSIBLE_REMOTE ansible_user=$(whoami) ansible_connection=ssh ansible_become=true" > "$INVENTORY_FILE"
-    fi
-}
-# Función para verificar si hay un inventario de Ansible definido
-check_ansible_inventory() {
-    INVENTORY_FILE="/tmp/ansible_hosts"
-    if [[ -f "$INVENTORY_FILE" ]] && grep -q "ansible_user" "$INVENTORY_FILE"; then
-        return 0 
-    else
-        return 1
-    fi
-}
-
-
-#=====================================================
-# 2. GESTIÓN DE PUERTOS Y UFW
-#=====================================================
-
-#-----------------------------------------------------
-# Funciones para abrir y cerrar puertos con ufw
-#-----------------------------------------------------
-
-habilitarUFW() {
-    if command -v ufw &> /dev/null; then
-        activoUFW=$(sudo ufw status | grep -i "Status: active")
-        if [[ -z "$activoUFW" ]]; then
-            echo "UFW está deshabilitado. Activándolo..."
-            sudo ufw --force enable
-            echo "UFW ha sido activado."
-        fi
-    fi
-}
-
-abrirPuertoUFW() {
-    local port=$1
-    if command -v ufw &> /dev/null; then
-        habilitarUFW
-        sudo ufw allow "$port"/tcp >/dev/null
-        sudo ufw allow "$port"/udp >/dev/null
-        echo "Puerto $port abierto en UFW."
-    fi
-}
-
-cerrarPuertoUFW() {
-    local port=$1
-    if command -v ufw &> /dev/null; then
-        sudo ufw delete allow "$port"/tcp >/dev/null 2>&1
-        sudo ufw delete allow "$port"/udp >/dev/null 2>&1
-        echo "Puerto $port cerrado en UFW."
+        echo -e "[remote]\n$ANSIBLE_REMOTE ansible_user=$(whoami) ansible_connection=ssh" > "$INVENTORY_FILE"
     fi
 }
 
@@ -298,17 +175,16 @@ cerrarPuertoUFW() {
 # 3. ESTADO DEL SISTEMA
 #=====================================================
 
-#-----------------------------------------------------
-# Función para mostrar el estado actual del sistema
-#-----------------------------------------------------
-
 estadoSistema() {
     echo "-----------------------------------------------------"
     echo " Estado actual del sistema"
     echo "-----------------------------------------------------"
-    if [[ $SYSTEM_STATUS -eq 0 ]]; then
+    echo -e "IP del equipo local: \n$(get_ip_address)"
+    if [[ $ANSIBLE_STATUS -eq 0 ]]; then
+        echo "dnsmasq fue instalado con Ansible en $ANSIBLE_REMOTE."
+        estadoSistemaAnsible
+    elif [[ $SYSTEM_STATUS -eq 0 ]]; then
         echo "dnsmasq está instalado por APT."
-
         if [[ -f /etc/dnsmasq.conf ]]; then
             interfaz=$(grep "^interface=" /etc/dnsmasq.conf | cut -d'=' -f2)
             puerto=$(grep "^port=" /etc/dnsmasq.conf | cut -d'=' -f2)
@@ -317,41 +193,55 @@ estadoSistema() {
         fi
     elif [[ $DOCKER_STATUS -eq 0 ]]; then
         echo "dnsmasq está corriendo en un contenedor Docker."
+        CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
+        if [[ -f "$CONFIG_FILE" ]]; then
+            interfaz=$(grep "^interface=" "$CONFIG_FILE" | cut -d'=' -f2)
+            puerto=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
+            ip=$(ip -o -4 addr show "$interfaz" | awk '{print $4}' | cut -d/ -f1)
+            echo "Interfaz (Docker): $interfaz | IP: $ip | Puerto: $puerto"
+        fi
     elif [[ $DOCKER_STATUS -eq 2 ]]; then
         echo "dnsmasq está en Docker pero el contenedor está detenido."
     elif [[ $DOCKER_STATUS -eq 3 ]]; then
         echo "dnsmasq está en Docker como imagen, pero no hay contenedor creado."
-    elif [[ $ANSIBLE_STATUS -eq 0 ]]; then
-        echo "dnsmasq fue instalado con Ansible."
-
-        if check_ansible_inventory; then
-            echo "Inventario de Ansible detectado. Configuración gestionada por Ansible."
-
-            # Ejecutar solo si no tenemos los datos en caché
-            if [[ -z "$INTERFAZ" || -z "$PUERTO" || -z "$IP" ]]; then
-                get_remote_dnsmasq_info
-            fi
-
-            # Mostrar valores obtenidos
-            echo "Interfaz: $INTERFAZ | IP: $IP | Puerto: $PUERTO"
-        else
-            echo "No se encontró un inventario de Ansible válido."
-        fi
     else
         echo "dnsmasq NO está instalado en el sistema, Docker ni gestionado por Ansible."
     fi
 }
 
+estadoSistemaAnsible() {
+    generar_inventario_ansible
+    cat <<'EOF' > /tmp/estado_ansible.yml
+---
+- name: Obtener estado de dnsmasq en host remoto
+  hosts: remote
+  gather_facts: no
+  become: yes
+  tasks:
+    - name: Obtener puerto configurado en /etc/dnsmasq.conf
+      shell: "grep '^port=' /etc/dnsmasq.conf | cut -d'=' -f2"
+      register: dnsmasq_port
+      changed_when: false
+    - name: Obtener interfaz configurada en /etc/dnsmasq.conf
+      shell: "grep '^interface=' /etc/dnsmasq.conf | cut -d'=' -f2"
+      register: dnsmasq_iface
+      changed_when: false
+    - name: Obtener IP de la interfaz configurada
+      shell: "ip -o -4 addr show {{ dnsmasq_iface.stdout }} | awk '{print \$4}' | cut -d/ -f1"
+      register: iface_ip
+      changed_when: false
+    - name: Mostrar información de dnsmasq
+      debug:
+        msg: "Interfaz: {{ dnsmasq_iface.stdout }}, IP: {{ iface_ip.stdout }}, Puerto: {{ dnsmasq_port.stdout }}"
+EOF
+    echo "Ejecutando playbook para obtener estado de dnsmasq en $ANSIBLE_REMOTE..."
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/estado_ansible.yml
+}
 
 #=====================================================
 # 4. INSTALACIÓN DE DNSMASQ
 #=====================================================
 
-#-----------------------------------------------------
-# Funciones para la instalación
-#-----------------------------------------------------
-
-# Función para verificar si dnsmasq ya está instalao
 verificar_instalacion_existente() {
     check_dnsmasq_system
     SYSTEM_STATUS=$?
@@ -359,7 +249,6 @@ verificar_instalacion_existente() {
     DOCKER_STATUS=$?
     check_dnsmasq_ansible
     ANSIBLE_STATUS=$?
-
     if [[ $SYSTEM_STATUS -eq 0 ]]; then
         echo "ERROR! dnsmasq ya está instalado en el sistema (APT)."
         return 1
@@ -373,18 +262,15 @@ verificar_instalacion_existente() {
     return 0
 }
 
-# Función para instalar dnsmasq mediante APT
 instalar_dnsmasq_apt() {
     verificar_instalacion_existente || exit 1
     echo "Instalando dnsmasq con APT..."
     sudo apt update && sudo apt install -y dnsmasq
-
     echo ""
     echo "Seleccione el tipo de configuración a aplicar:"
     echo "1) Configuración básica (Puerto 5354, dominio 'juanpepe', interfaz ens33, DNS 8.8.8.8)"
     echo "2) Configuración personalizada"
     read -p "Opción (1/2): " opcion_config
-
     if [[ "$opcion_config" == "1" ]]; then
         puerto=5354
         dominio="juanpepe"
@@ -406,12 +292,10 @@ instalar_dnsmasq_apt() {
         interfaz="ens33"
         servidores_dns="8.8.8.8"
     fi
-
     if check_port "$puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$puerto")
         puerto=$nuevo_puerto
     fi
-
     echo "Generando archivo de configuración en /etc/dnsmasq.conf..."
     sudo tee /etc/dnsmasq.conf > /dev/null <<EOF
 # Configuración de dnsmasq (APT)
@@ -420,13 +304,10 @@ domain=$dominio
 interface=$interfaz
 no-resolv
 EOF
-
     for dns in $servidores_dns; do
         echo "server=$dns" | sudo tee -a /etc/dnsmasq.conf > /dev/null
     done
-
     abrirPuertoUFW "$puerto"
-
     echo "dnsmasq instalado y configurado en el sistema (APT)."
     sudo systemctl restart dnsmasq
 }
@@ -437,14 +318,11 @@ instalar_dnsmasq_docker() {
     echo "Instalando dnsmasq en Docker..."
     docker pull diego57709/dnsmasq:latest
     mkdir -p ~/dnsmasq-docker
-
     echo "Seleccione el tipo de configuración:"
     echo "1) Configuración básica (Puerto 5354, interfaz ens33, DNS 8.8.8.8)"
     echo "2) Configuración personalizada"
     read -p "Opción (1/2): " opcion_config
-
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
-
     if [[ "$opcion_config" == "1" ]]; then
         puerto=5354
         interfaz="ens33"
@@ -462,12 +340,10 @@ instalar_dnsmasq_docker() {
         interfaz="ens33"
         servidores_dns="8.8.8.8"
     fi
-
     if check_port "$puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$puerto")
         puerto=$nuevo_puerto
     fi
-
     echo "Generando archivo de configuración en $CONFIG_FILE..."
     tee $CONFIG_FILE > /dev/null <<EOF
 # Configuración de dnsmasq para Docker
@@ -475,23 +351,17 @@ port=$puerto
 interface=$interfaz
 no-resolv
 EOF
-
     for dns in $servidores_dns; do
         echo "server=$dns"
     done >> "$CONFIG_FILE"
-
     abrirPuertoUFW "$puerto"
-
     docker run -d --name dnsmasq --network host \
-    -p "$puerto:$puerto/udp" \
-    -p "$puerto:$puerto/tcp" \
-    -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-    diego57709/dnsmasq:latest
-
+        -p "$puerto:$puerto/udp" \
+        -p "$puerto:$puerto/tcp" \
+        -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
+        diego57709/dnsmasq:latest
     echo "dnsmasq instalado en Docker con configuración en el puerto $puerto."
 }
-
-
 
 instalar_dnsmasq_ansible() {
     verificar_instalacion_existente || exit 1
@@ -580,17 +450,13 @@ instalar_dnsmasq_ansible() {
       when: ansible_facts['pkg_mgr'] == 'apt'
 EOF
     echo "Ejecutando playbook de Ansible en $ANSIBLE_REMOTE..."
-    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_install.yml --ask-become-pass
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_install.yml
     echo "dnsmasq instalado y configurado con Ansible en $ANSIBLE_REMOTE en el puerto $puerto."
 }
 
 #=====================================================
 # 5. MENÚ PRINCIPAL Y LOGS
 #=====================================================
-
-#-----------------------------------------------------
-# Funciones para el menú y para consultar logs
-#-----------------------------------------------------
 
 mostrarMenu() {
     echo -e "\nMENÚ DE DNSMASQ"
@@ -605,7 +471,6 @@ mostrarMenu() {
 consultarLogs() {
     echo -e "\nCONSULTAR LOGS DE DNSMASQ"
     echo "---------------------------------"
-    
     if [[ $SYSTEM_STATUS -eq 0 ]]; then
         log_source="system"
         echo "Se utilizará 'journalctl -u dnsmasq' para consultar los logs."
@@ -620,7 +485,6 @@ consultarLogs() {
         echo "No se encontró dnsmasq en el sistema, Docker ni gestionado por Ansible para consultar logs."
         return
     fi
-
     echo ""
     echo "Seleccione la opción de filtrado:"
     echo "1) Mostrar TODOS los logs"
@@ -630,7 +494,6 @@ consultarLogs() {
     echo "5) Mostrar las últimas N líneas (ej: 10, 20, 30)"
     echo "6) Mostrar logs por PRIORIDAD (ej: err, warning, info, debug)"
     read -p "Opción: " filtro_opcion
-
     case "$filtro_opcion" in
         1)
             if [[ "$log_source" == "system" || "$log_source" == "ansible" ]]; then
@@ -690,10 +553,6 @@ consultarLogs() {
 # 6. GESTIÓN Y CONFIGURACIÓN DE DNSMASQ EN EL SISTEMA
 #=====================================================
 
-#-----------------------------------------------------
-# Funciones de gestión en el sistema
-#-----------------------------------------------------
-
 gestionarServicioSistema() {
     echo -e "\nGESTIÓN DE DNSMASQ EN EL SISTEMA"
     echo "---------------------------------"
@@ -711,24 +570,16 @@ gestionarServicioSistema() {
     esac
 }
 
-#-----------------------------------------------------
-# Funciones de configuración en el sistema
-#-----------------------------------------------------
-
 cambiarPuertoSistema() {
     viejo_puerto=$(grep "^port=" /etc/dnsmasq.conf | cut -d'=' -f2)
-
     read -p "Ingrese el nuevo puerto: " nuevo_puerto
     if check_port "$nuevo_puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$nuevo_puerto")
     fi
-
     if [[ "$viejo_puerto" != "$nuevo_puerto" ]]; then
-        # Cerramos el puerto anterior y abrimos el nuevo
         cerrarPuertoUFW "$viejo_puerto"
         abrirPuertoUFW "$nuevo_puerto"
     fi
-
     sudo sed -i "s/^port=.*/port=$nuevo_puerto/" /etc/dnsmasq.conf
     sudo systemctl restart dnsmasq
     echo "Puerto cambiado a $nuevo_puerto y servicio reiniciado."
@@ -792,7 +643,6 @@ eliminarDnsmasqSistema() {
         current_port=$(grep "^port=" /etc/dnsmasq.conf | cut -d'=' -f2)
         cerrarPuertoUFW "$current_port"
     fi
-
     echo "Eliminando dnsmasq del sistema..."
     sudo systemctl stop dnsmasq
     sudo apt remove -y dnsmasq
@@ -804,10 +654,6 @@ eliminarDnsmasqSistema() {
 #=====================================================
 # 7. GESTIÓN Y CONFIGURACIÓN DE DNSMASQ EN DOCKER
 #=====================================================
-
-#-----------------------------------------------------
-# Funciones de gestión en Docker
-#-----------------------------------------------------
 
 gestionarServicioDocker() {
     echo -e "\nGESTIÓN DE DNSMASQ EN DOCKER"
@@ -827,33 +673,23 @@ gestionarServicioDocker() {
     esac
 }
 
-#-----------------------------------------------------
-# Funciones de configuración en Docker
-#-----------------------------------------------------
-
 cambiarPuertoDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     viejo_puerto=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-
     read -p "Ingrese el nuevo puerto: " nuevo_puerto
     if check_port "$nuevo_puerto"; then
         nuevo_puerto=$(resolve_port_conflict "$nuevo_puerto")
     fi
-
     if [[ "$viejo_puerto" != "$nuevo_puerto" ]]; then
         cerrarPuertoUFW "$viejo_puerto"
         abrirPuertoUFW "$nuevo_puerto"
     fi
-
     sed -i "s/^port=.*/port=$nuevo_puerto/" "$CONFIG_FILE"
-
     docker stop dnsmasq && docker rm dnsmasq
-
     docker run -d --name dnsmasq --network host \
-        -p $nuevo_puerto:$nuevo_puerto/udp -p $nuevo_puerto:$nuevo_puerto/tcp \
+        -p "$nuevo_puerto:$nuevo_puerto/udp" -p "$nuevo_puerto:$nuevo_puerto/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
-
+        diego57709/dnsmasq:latest
     echo "Puerto cambiado a $nuevo_puerto y contenedor reiniciado."
 }
 
@@ -861,20 +697,14 @@ cambiarDominioDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     read -p "Ingrese el nuevo dominio: " nuevo_dominio
     [[ -z "$nuevo_dominio" ]] && nuevo_dominio="local"
-
     sed -i "s/^domain=.*/domain=$nuevo_dominio/" "$CONFIG_FILE"
-
     docker stop dnsmasq 2>/dev/null
     docker rm dnsmasq 2>/dev/null
-
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-
     docker run -d --name dnsmasq --network host \
-        -p "$current_port:$current_port/udp" \
-        -p "$current_port:$current_port/tcp" \
+        -p "$current_port:$current_port/udp" -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
-
+        diego57709/dnsmasq:latest
     echo "Dominio cambiado a $nuevo_dominio y contenedor reiniciado."
 }
 
@@ -882,67 +712,46 @@ cambiarInterfazDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     read -p "Ingrese la nueva interfaz (ej: eth0, ens33): " nueva_interfaz
     [[ -z "$nueva_interfaz" ]] && nueva_interfaz="ens33"
-
     sed -i "s/^interface=.*/interface=$nueva_interfaz/" "$CONFIG_FILE"
-
     docker stop dnsmasq 2>/dev/null
     docker rm dnsmasq 2>/dev/null
-
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-
     docker run -d --name dnsmasq --network host \
-        -p "$current_port:$current_port/udp" \
-        -p "$current_port:$current_port/tcp" \
+        -p "$current_port:$current_port/udp" -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
-
+        diego57709/dnsmasq:latest
     echo "Interfaz cambiada a $nueva_interfaz y contenedor reiniciado."
 }
 
 cambiarServidoresDNSDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
-
     read -p "Ingrese los nuevos servidores DNS (separados por espacios): " nuevos_dns
-
     sed -i '/^server=/d' "$CONFIG_FILE"
-
     for dns in $nuevos_dns; do
         echo "server=$dns" >> "$CONFIG_FILE"
     done
-
     docker stop dnsmasq 2>/dev/null
     docker rm dnsmasq 2>/dev/null
-
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-
     docker run -d --name dnsmasq --network host \
-        -p "$current_port:$current_port/udp" \
-        -p "$current_port:$current_port/tcp" \
+        -p "$current_port:$current_port/udp" -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
-
+        diego57709/dnsmasq:latest
     echo "Servidores DNS actualizados a: $nuevos_dns y contenedor reiniciado."
 }
 
 añadirHostsDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
-
     read -p "Ingrese el nombre del host (ej: servidor.local): " nombre_host
     read -p "Ingrese la IP correspondiente: " ip_host
-
     echo "host-record=$nombre_host,$ip_host" >> "$CONFIG_FILE"
-
     docker stop dnsmasq 2>/dev/null
     docker rm dnsmasq 2>/dev/null
- 
     current_port=$(grep "^port=" "$CONFIG_FILE" | cut -d'=' -f2)
-
     docker run -d --name dnsmasq --network host \
-        -p "$current_port:$current_port/udp" \
-        -p "$current_port:$current_port/tcp" \
+        -p "$current_port:$current_port/udp" -p "$current_port:$current_port/tcp" \
         -v ~/dnsmasq-docker/dnsmasq.conf:/etc/dnsmasq.conf \
-        diego57709/dnsmasq:latest 
-
+        diego57709/dnsmasq:latest
     echo "Se ha añadido el host $nombre_host con IP $ip_host y el contenedor ha sido reiniciado."
 }
 
@@ -968,7 +777,6 @@ configurarServicioDocker() {
 eliminarDnsmasqDocker() {
     CONFIG_FILE=~/dnsmasq-docker/dnsmasq.conf
     CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
-
     echo -e "\nELIMINAR DNSMASQ EN DOCKER"
     echo "---------------------------------"
     echo "1) Borrar solo el contenedor"
@@ -1003,8 +811,6 @@ eliminarDnsmasqDocker() {
 # 8. GESTIÓN Y CONFIGURACIÓN DE DNSMASQ EN ANSIBLE
 #=====================================================
 
-
-# Gestion dels ervicio
 gestionarServicioAnsible() {
     echo -e "\nGESTIÓN DE DNSMASQ (ANSIBLE)"
     echo "---------------------------------"
@@ -1013,68 +819,61 @@ gestionarServicioAnsible() {
     echo "3) Reiniciar servicio"
     echo "4) Estado del servicio"
     read -p "Seleccione una opción: " opcion
-
     case "$opcion" in
-        1) ansible_dnsmasq_servicio "started" ;;
-        2) ansible_dnsmasq_servicio "stopped" ;;
-        3) ansible_dnsmasq_servicio "restarted" ;;
+        1) ansible_dnsmasq_service "started" ;;
+        2) ansible_dnsmasq_service "stopped" ;;
+        3) ansible_dnsmasq_service "restarted" ;;
         4) ansible_dnsmasq_status ;;
         *) echo "Opción no válida." ;;
     esac
 }
 
-ansible_dnsmasq_servicio() {
+ansible_dnsmasq_service() {
     local estado_ansible=$1
-    echo "Ejecutando Ansible para cambiar el estado de dnsmasq a '$estado_ansible'..."
-
-    ansible remote -i /tmp/ansible_hosts -m ansible.builtin.service -a "name=dnsmasq state=$estado_ansible" --become --ask-become-pass
-
-    if [[ $? -ne 0 ]]; then
-        echo "Error: La ejecución de Ansible falló."
-    else
-        echo "Operación '$estado_ansible' completada con éxito."
-    fi
+    generar_inventario_ansible
+    echo "Creando playbook para '$estado_ansible' dnsmasq en Ansible..."
+    cat <<EOF > /tmp/dnsmasq_service.yml
+---
+- name: Gestionar servicio dnsmasq con Ansible
+  hosts: remote
+  become: yes
+  tasks:
+    - name: Asegurar dnsmasq en estado '$estado_ansible'
+      service:
+        name: dnsmasq
+        state: $estado_ansible
+EOF
+    echo "Ejecutando playbook de Ansible para '$estado_ansible' dnsmasq en $ANSIBLE_REMOTE..."
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_service.yml
+    echo "Operación '$estado_ansible' finalizada."
 }
 
 ansible_dnsmasq_status() {
-    echo "Consultando el estado del servicio dnsmasq en el host remoto con Ansible..."
-
-    ansible remote -i /tmp/ansible_hosts -m ansible.builtin.command -a "systemctl is-active dnsmasq" --become --ask-become-pass \
-    | grep -E 'active|inactive|failed' | awk '{print "Estado de dnsmasq:", $NF}'
-
-    if [[ $? -ne 0 ]]; then
-        echo "Error: No se pudo obtener el estado del servicio dnsmasq."
-    fi
+    generar_inventario_ansible
+    echo "Creando playbook para consultar 'status' de dnsmasq..."
+    cat <<'EOF' > /tmp/dnsmasq_status.yml
+---
+- name: Consultar estado de dnsmasq con Ansible
+  hosts: remote
+  become: yes
+  tasks:
+    - name: Ver estado del servicio con systemd
+      shell: systemctl status dnsmasq
+      register: dnsmasq_status
+    - name: Mostrar salida
+      debug:
+        var: dnsmasq_status.stdout
+EOF
+    echo "Ejecutando playbook de Ansible para consultar el estado en $ANSIBLE_REMOTE..."
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_status.yml
 }
-
-
-# Config del servicio con ansible
-configurarServicioAnsible() {
-    echo -e "\nCONFIGURAR DNSMASQ (ANSIBLE)"
-    echo "---------------------------------"
-    echo "1) Cambiar puerto"
-    echo "2) Cambiar dominio"
-    echo "3) Cambiar interfaz"
-    echo "4) Cambiar servidores DNS"
-    echo "5) Añadir host"
-    read -p "Seleccione una opción: " opcion
-    case "$opcion" in
-        1) ansible_cambiarPuerto ;;
-        2) ansible_cambiarDominio ;;
-        3) ansible_cambiarInterfaz ;;
-        4) ansible_cambiarServidoresDNS ;;
-        5) ansible_añadirHosts ;;
-        *) echo "Opción no válida." ;;
-    esac
-}
-
 
 ansible_cambiarPuerto() {
     read -p "Ingrese el nuevo puerto: " nuevo_puerto
-
-    ansible-playbook -i /tmp/ansible_hosts /dev/stdin --ask-become-pass <<EOF
+    generar_inventario_ansible
+    cat <<EOF > /tmp/dnsmasq_conf_port.yml
 ---
-- name: Cambiar puerto dnsmasq via Ansible
+- name: Cambiar puerto dnsmasq vía Ansible
   hosts: remote
   become: yes
   tasks:
@@ -1083,21 +882,20 @@ ansible_cambiarPuerto() {
         path: /etc/dnsmasq.conf
         regexp: '^port='
         line: "port=$nuevo_puerto"
-
     - name: Reiniciar dnsmasq
       service:
         name: dnsmasq
         state: restarted
 EOF
-
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_conf_port.yml
     echo "Se cambió el puerto a $nuevo_puerto."
 }
 
 ansible_cambiarDominio() {
     read -p "Ingrese el nuevo dominio: " nuevo_dominio
     [[ -z "$nuevo_dominio" ]] && nuevo_dominio="local"
-
-    ansible-playbook -i /tmp/ansible_hosts /dev/stdin --ask-become-pass <<EOF
+    generar_inventario_ansible
+    cat <<EOF > /tmp/dnsmasq_conf_domain.yml
 ---
 - name: Cambiar dominio en /etc/dnsmasq.conf con Ansible
   hosts: remote
@@ -1108,21 +906,20 @@ ansible_cambiarDominio() {
         path: /etc/dnsmasq.conf
         regexp: '^domain='
         line: "domain=$nuevo_dominio"
-
     - name: Reiniciar dnsmasq
       service:
         name: dnsmasq
         state: restarted
 EOF
-
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_conf_domain.yml
     echo "Se cambió el dominio a $nuevo_dominio."
 }
 
 ansible_cambiarInterfaz() {
     read -p "Ingrese la nueva interfaz (ej: eth0, ens33): " nueva_interfaz
     [[ -z "$nueva_interfaz" ]] && nueva_interfaz="ens33"
-
-    ansible-playbook -i /tmp/ansible_hosts /dev/stdin --ask-become-pass <<EOF
+    generar_inventario_ansible
+    cat <<EOF > /tmp/dnsmasq_conf_iface.yml
 ---
 - name: Cambiar interfaz en /etc/dnsmasq.conf con Ansible
   hosts: remote
@@ -1133,20 +930,19 @@ ansible_cambiarInterfaz() {
         path: /etc/dnsmasq.conf
         regexp: '^interface='
         line: "interface=$nueva_interfaz"
-
     - name: Reiniciar dnsmasq
       service:
         name: dnsmasq
         state: restarted
 EOF
-
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_conf_iface.yml
     echo "Se cambió la interfaz a $nueva_interfaz."
 }
 
 ansible_cambiarServidoresDNS() {
     read -p "Ingrese los nuevos servidores DNS (separados por espacios): " nuevos_dns
-
-    ansible-playbook -i /tmp/ansible_hosts /dev/stdin --ask-become-pass <<EOF
+    generar_inventario_ansible
+    cat <<EOF > /tmp/dnsmasq_conf_dns.yml
 ---
 - name: Cambiar servidores DNS en /etc/dnsmasq.conf con Ansible
   hosts: remote
@@ -1157,29 +953,31 @@ ansible_cambiarServidoresDNS() {
         path: /etc/dnsmasq.conf
         regexp: '^server=.*'
         replace: ''
-    
     - name: Añadir nuevos servidores DNS
       lineinfile:
         path: /etc/dnsmasq.conf
         insertafter: EOF
         line: "server={{ item }}"
-      loop:
-        - ${nuevos_dns// / }
-    
+      with_items:
+EOF
+    for dns in $nuevos_dns; do
+        echo "        - $dns" >> /tmp/dnsmasq_conf_dns.yml
+    done
+    cat <<'EOF' >> /tmp/dnsmasq_conf_dns.yml
     - name: Reiniciar dnsmasq
       service:
         name: dnsmasq
         state: restarted
 EOF
-
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_conf_dns.yml
     echo "Servidores DNS actualizados a: $nuevos_dns."
 }
 
 ansible_añadirHosts() {
     read -p "Ingrese el nombre del host (ej: servidor.local): " nombre_host
     read -p "Ingrese la IP correspondiente: " ip_host
-
-    ansible-playbook -i /tmp/ansible_hosts /dev/stdin --ask-become-pass <<EOF
+    generar_inventario_ansible
+    cat <<EOF > /tmp/dnsmasq_conf_hosts.yml
 ---
 - name: Añadir host en /etc/dnsmasq.conf con Ansible
   hosts: remote
@@ -1190,34 +988,18 @@ ansible_añadirHosts() {
         path: /etc/dnsmasq.conf
         insertafter: EOF
         line: "host-record=$nombre_host,$ip_host"
-    
     - name: Reiniciar dnsmasq
       service:
         name: dnsmasq
         state: restarted
 EOF
-
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_conf_hosts.yml
     echo "Se ha añadido el host $nombre_host con IP $ip_host."
 }
 
-
-# Eliminar dnsmasq con ansible
 eliminarDnsmasqAnsible() {
-    if [[ ! -f "$ANSIBLE_REMOTE_FILE" ]]; then
-        echo "Error: No se ha configurado una máquina remota para Ansible."
-        exit 1
-    fi
-
-    ANSIBLE_REMOTE=$(cat "$ANSIBLE_REMOTE_FILE")
-    INVENTORY_FILE="/tmp/ansible_hosts"
-
-    echo "Eliminando dnsmasq en $ANSIBLE_REMOTE con Ansible..."
-
-    if [[ ! -f "$INVENTORY_FILE" ]]; then
-        echo "[remote]" > "$INVENTORY_FILE"
-        echo "$ANSIBLE_REMOTE ansible_user=$(whoami) ansible_connection=ssh ansible_become=true" >> "$INVENTORY_FILE"
-    fi
-
+    generar_inventario_ansible
+    echo "Eliminando dnsmasq con Ansible en $ANSIBLE_REMOTE..."
     cat <<EOF > /tmp/dnsmasq_remove.yml
 ---
 - name: Eliminar dnsmasq con Ansible
@@ -1229,46 +1011,27 @@ eliminarDnsmasqAnsible() {
         name: dnsmasq
         state: stopped
       ignore_errors: yes
-
-    - name: Desinstalar dnsmasq
+    - name: Desinstalar paquete dnsmasq
       apt:
         name: dnsmasq
         state: absent
         purge: yes
         update_cache: yes
       ignore_errors: yes
-
-    - name: Eliminar archivo de configuración
+    - name: Eliminar /etc/dnsmasq.conf si existe
       file:
         path: /etc/dnsmasq.conf
         state: absent
       ignore_errors: yes
-
-    - name: Eliminar posibles archivos adicionales
-      file:
-        path: "/etc/dnsmasq.d"
-        state: absent
-      ignore_errors: yes
 EOF
-
-    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_remove.yml --ask-become-pass
-
-    > "$INVENTORY_FILE"
-
-    echo "dnsmasq ha sido eliminado de $ANSIBLE_REMOTE con Ansible y el inventario ha sido limpiado."
-    exit 0
+    ansible-playbook -i "$INVENTORY_FILE" /tmp/dnsmasq_remove.yml
+    echo "dnsmasq ha sido eliminado vía Ansible en $ANSIBLE_REMOTE."
+    exit 1
 }
-
-
 
 #=====================================================
 # 9. INICIO DEL SCRIPT
 #=====================================================
-
-
-#-----------------------------------------------------
-# Bloque de ejecución
-#-----------------------------------------------------
 
 check_dnsmasq_system
 SYSTEM_STATUS=$?
@@ -1276,13 +1039,10 @@ check_dnsmasq_docker
 DOCKER_STATUS=$?
 check_dnsmasq_ansible
 ANSIBLE_STATUS=$?
-
-# Obtener la IP
 IP_ADDRESS=$(get_ip_address)
 
 #!/bin/bash
 
-# Función de ayuda
 help() {
     echo "Uso: $0 [opciones]"
     echo ""
@@ -1293,99 +1053,96 @@ help() {
     echo "  --uninstall <apt|docker|ansible>                            Eliminar dnsmasq"
 }
 
-# Verifica si se pasó al menos un argumento
 if [[ $# -ge 1 ]]; then
-case "$1" in
-    --help)
-        help
-        exit 0
-        ;;
-    
-    --install)
-        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
-        case "$2" in
-            apt) instalar_dnsmasq_apt ;;
-            docker) instalar_dnsmasq_docker ;;
-            ansible) instalar_dnsmasq_ansible ;;
-            *) echo "Error: Método inválido. Usa: $0 --install <apt|docker|ansible>"; exit 1 ;;
-        esac
-        exit 0
-        ;;
-    --configuracion)
-    [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
-        case "$2" in
-            apt) configurarServicioSistema ;;
-            docker) configurarServicioDocker ;;
-            ansible) configurarServicioAnsible ;;
-            *) echo "Error: Método inválido. Usa: $0 --configuracion <apt|docker|ansible>"; exit 1 ;;
-        esac
-        exit 0
-        ;;
-    --gestion)
-        [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
-        case "$2" in
-            apt) 
-                case "$3" in
-                    start) sudo systemctl start dnsmasq ;;
-                    stop) sudo systemctl stop dnsmasq ;;
-                    restart) sudo systemctl restart dnsmasq ;;
-                    status) systemctl status dnsmasq ;;
-                *) echo "Error: Acción inválida. Usa: $0 --gestion apt <start|stop|restart|status>"; exit 1 ;;
-                esac
-                ;;
-            docker) 
-                CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
-                case "$3" in
-                    start) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
-                    stop) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
-                    restart) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
-                    status) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
-                *) echo "Error: Acción inválida. Usa: $0 --gestion docker <start|stop|restart|status>"; exit 1 ;;
-                esac
-                ;;
-            ansible) 
-                case "$3" in
-                    start) ansible_dnsmasq_servicio "started" ;;
-                    stop) ansible_dnsmasq_servicio "stopped" ;;
-                    restart) ansible_dnsmasq_servicio "restarted" ;;
-                    status) ansible_dnsmasq_status ;;
-                    *) echo "Error: Acción inválida. Usa: $0 --gestion ansible <start|stop|restart|status>"; exit 1 ;;
-                esac
-                ;;
-            *) echo "Error: Acción inválida. Usa: $0 --gestion <apt|docker|ansible> <start|stop|restart|status>"; exit 1 ;;
+    case "$1" in
+        --help)
+            help
+            exit 0
+            ;;
+        --install)
+            [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+            case "$2" in
+                apt) instalar_dnsmasq_apt ;;
+                docker) instalar_dnsmasq_docker ;;
+                ansible) instalar_dnsmasq_ansible ;;
+                *) echo "Error: Método inválido. Usa: $0 --install <apt|docker|ansible>"; exit 1 ;;
             esac
             exit 0
             ;;
-    --logs)
-        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación (apt, docker o ansible)."; help; exit 1; }
-        case "$2" in
-            apt) 
-                echo "Consultando logs con (APT)..."
-                journalctl -u dnsmasq
-                ;;
-                
-            docker) 
-                CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
-                if [[ -z "$CONTAINER_ID" ]]; then
-                    echo "Error: No hay un contenedor dnsmasq en Docker."
+        --configuracion)
+            [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+            case "$2" in
+                apt) configurarServicioSistema ;;
+                docker) configurarServicioDocker ;;
+                ansible) configurarServicioAnsible ;;
+                *) echo "Error: Método inválido. Usa: $0 --configuracion <apt|docker|ansible>"; exit 1 ;;
+            esac
+            exit 0
+            ;;
+        --gestion)
+            [[ -z "$2" ]] && { echo "Error: Falta la acción a realizar."; help; exit 1; }
+            case "$2" in
+                apt)
+                    case "$3" in
+                        start) sudo systemctl start dnsmasq ;;
+                        stop) sudo systemctl stop dnsmasq ;;
+                        restart) sudo systemctl restart dnsmasq ;;
+                        status) systemctl status dnsmasq ;;
+                        *) echo "Error: Acción inválida. Usa: $0 --gestion apt <start|stop|restart|status>"; exit 1 ;;
+                    esac
+                    ;;
+                docker)
+                    CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+                    case "$3" in
+                        start) docker start "$CONTAINER_ID" && echo "Contenedor iniciado." ;;
+                        stop) docker stop "$CONTAINER_ID" && echo "Contenedor detenido." ;;
+                        restart) docker restart "$CONTAINER_ID" && echo "Contenedor reiniciado." ;;
+                        status) docker ps --filter "id=$CONTAINER_ID" --format "ID: {{.ID}}, Estado: {{.Status}}" ;;
+                        *) echo "Error: Acción inválida. Usa: $0 --gestion docker <start|stop|restart|status>"; exit 1 ;;
+                    esac
+                    ;;
+                ansible)
+                    case "$3" in
+                        start) ansible_dnsmasq_service "started" ;;
+                        stop) ansible_dnsmasq_service "stopped" ;;
+                        restart) ansible_dnsmasq_service "restarted" ;;
+                        status) ansible_dnsmasq_status ;;
+                        *) echo "Error: Acción inválida. Usa: $0 --gestion ansible <start|stop|restart|status>"; exit 1 ;;
+                    esac
+                    ;;
+                *) echo "Error: Acción inválida. Usa: $0 --gestion <apt|docker|ansible> <start|stop|restart|status>"; exit 1 ;;
+            esac
+            exit 0
+            ;;
+        --logs)
+            [[ -z "$2" ]] && { echo "Error: Falta el método de instalación (apt, docker o ansible)."; help; exit 1; }
+            case "$2" in
+                apt)
+                    echo "Consultando logs con (APT)..."
+                    journalctl -u dnsmasq
+                    ;;
+                docker)
+                    CONTAINER_ID=$(docker ps -a -q --filter "ancestor=diego57709/dnsmasq")
+                    if [[ -z "$CONTAINER_ID" ]]; then
+                        echo "Error: No hay un contenedor dnsmasq en Docker."
+                        exit 1
+                    fi
+                    echo "Consultando logs del contenedor dnsmasq en Docker..."
+                    docker logs "$CONTAINER_ID"
+                    ;;
+                ansible)
+                    echo "Consultando logs con Ansible..."
+                    journalctl -u dnsmasq
+                    ;;
+                *)
+                    echo "Error: Método inválido. Usa: $0 --logs <apt|docker|ansible>"
                     exit 1
-                fi
-                echo "Consultando logs del contenedor dnsmasq en Docker..."
-                docker logs "$CONTAINER_ID"
-                ;;
-            ansible) 
-                echo "Consultando logs con Ansible..."
-                journalctl -u dnsmasq
-                ;;
-            *)
-                echo "Error: Método inválido. Usa: $0 --logs <apt|docker|ansible>"
-                exit 1
-                ;;
-        esac
-        exit 0
-        ;;
-    --uninstall)
-        [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
+                    ;;
+            esac
+            exit 0
+            ;;
+        --uninstall)
+            [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
             case "$2" in
                 apt) eliminarDnsmasqSistema ;;
                 docker) eliminarDnsmasqDocker ;;
@@ -1394,15 +1151,14 @@ case "$1" in
             esac
             exit 0
             ;;
-    *)
-        echo "Error: Opción no reconocida."
-        help
-        exit 1
-        ;;
-esac
+        *)
+            echo "Error: Opción no reconocida."
+            help
+            exit 1
+            ;;
+    esac
 fi
 
-# Si dnsmasq no está instalado ni en el sistema ni en Docker, preguntamos cómo instalarlo
 if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 && $ANSIBLE_STATUS -eq 1 ]]; then
     estadoSistema
     echo "Seleccione el método de instalación:"
@@ -1411,7 +1167,7 @@ if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 && $ANSIBLE_STATUS -eq 1 ]]; 
     echo "2) Docker (contenedor)"
     echo "3) Ansible"
     echo "0) Salir"
-    read -p "Seleccione una opción (1/2/0): " metodo
+    read -p "Seleccione una opción (1/2/3/0): " metodo
     case "$metodo" in
         1)
             instalar_dnsmasq_apt
@@ -1436,7 +1192,6 @@ if [[ $SYSTEM_STATUS -eq 1 && $DOCKER_STATUS -eq 1 && $ANSIBLE_STATUS -eq 1 ]]; 
     esac
 fi
 
-# Menú dinámico según dónde esté instalado
 if [[ $SYSTEM_STATUS -eq 0 ]]; then
     MENU_OPCION_1="Gestionar dnsmasq (Sistema)"
     MENU_OPCION_2="Consultar logs"
@@ -1470,7 +1225,6 @@ if [[ $ANSIBLE_STATUS -ne 1 ]]; then
     MENU_FUNCION_4="eliminarDnsmasqAnsible"
 fi
 
-# Bucle del menú principal
 while true; do
     estadoSistema
     mostrarMenu
