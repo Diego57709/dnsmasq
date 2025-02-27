@@ -8,18 +8,12 @@
 # Funciones generales
 #-----------------------------------------------------
 
-# Función para obtener la IP del equipo
-#get_ip_address() {
-#    ip -o -4 addr show | tr -s ' ' | grep -Ev ' lo | docker' | awk '{print $2 ":", $4}' | cut -d/ -f1
-#}
 # Función para obtener información del host remoto con Ansible
 get_remote_dnsmasq_info() {
     INVENTORY_FILE="/tmp/ansible_hosts"
     REMOTE_INFO_FILE="/tmp/dnsmasq_remote_info.txt"
 
     echo "Recopilando información del host remoto con Ansible..."
-
-    # Crear playbook temporal para obtener configuración de dnsmasq
     cat <<EOF > /tmp/dnsmasq_info.yml
 ---
 - name: Obtener configuración de dnsmasq
@@ -70,7 +64,6 @@ check_dnsmasq_system() {
     fi
     return 0
 }
-
 
 # Función para verificar el estado de dnsmasq en Docker
 check_dnsmasq_docker() {
@@ -190,7 +183,7 @@ instalar_docker() {
 ANSIBLE_REMOTE_FILE="$HOME/.ansible_remote"
 ANSIBLE_REMOTE=""
 
-# Función para configurar la máquina remota para Ansible
+# Función para configurar la máquina remotacon ansible
 configurar_ansible_remote() {
     read -p "Ingrese la IP o hostname de la máquina remota donde se gestionará Ansible: " remote_ansible
     if [[ -z "$remote_ansible" ]]; then
@@ -235,7 +228,7 @@ instalar_ansible() {
     fi
 }
 
-# Función para generar un inventario dinámico para Ansible
+# Función para generar un inventario para Ansible
 generar_inventario_ansible() {
     INVENTORY_FILE="/tmp/ansible_hosts"
     if [[ "$ANSIBLE_REMOTE" == "localhost" ]]; then
@@ -245,7 +238,7 @@ generar_inventario_ansible() {
         echo -e "[remote]\n$ANSIBLE_REMOTE ansible_user=$(whoami) ansible_connection=ssh ansible_become=true" > "$INVENTORY_FILE"
     fi
 }
-# Función para verificar si hay un inventario de Ansible definido
+# Función para verificar si hay un inventario de Ansible del que usarlo
 check_ansible_inventory() {
     INVENTORY_FILE="/tmp/ansible_hosts"
     if [[ -f "$INVENTORY_FILE" ]] && grep -q "ansible_user" "$INVENTORY_FILE"; then
@@ -1264,23 +1257,12 @@ EOF
 #=====================================================
 # 9. INICIO DEL SCRIPT
 #=====================================================
-
-
-#-----------------------------------------------------
-# Bloque de ejecución
-#-----------------------------------------------------
-
 check_dnsmasq_system
 SYSTEM_STATUS=$?
 check_dnsmasq_docker
 DOCKER_STATUS=$?
 check_dnsmasq_ansible
 ANSIBLE_STATUS=$?
-
-# Obtener la IP
-IP_ADDRESS=$(get_ip_address)
-
-#!/bin/bash
 
 # Función de ayuda
 help() {
@@ -1300,7 +1282,6 @@ case "$1" in
         help
         exit 0
         ;;
-    
     --install)
         [[ -z "$2" ]] && { echo "Error: Falta el método de instalación."; help; exit 1; }
         case "$2" in
@@ -1476,10 +1457,10 @@ while true; do
     mostrarMenu
     read -p "Seleccione una opción: " opcionMenu
     case "$opcionMenu" in
-        1) [[ -n "$MENU_FUNCION_1" ]] && $MENU_FUNCION_1 ;;
+        1) $MENU_FUNCION_1 ;;
         2) $MENU_FUNCION_2 ;;
         3) $MENU_FUNCION_3 ;;
-        4) [[ -n "$MENU_FUNCION_4" ]] && $MENU_FUNCION_4 ;;
+        4) $MENU_FUNCION_4 ;;
         0) echo "Saliendo..." && exit 0 ;;
         *) echo "Opción no válida." ;;
     esac
